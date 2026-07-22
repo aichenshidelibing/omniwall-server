@@ -1,0 +1,20 @@
+# Backup files
+*.backup
+
+# Environment variables
+.env
+.dev.vars
+
+# Secrets
+wrangler.toml
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
