@@ -120,6 +120,9 @@ OmniWall 使用 Cloudflare D1 保存运行数据，包括：
 | `/docs` | 在线文档、API 说明、限速、配额、图源状态 |
 | `/url-builder` | 可视化 API 链接生成器 |
 | `/featured` | 今日推荐 / 预设主题展示页 |
+| `/daily` | 每日精选，按横屏 / 竖屏 / 方图生成当天固定壁纸 |
+| `/explore` | 瀑布流探索页，支持关键词、图源、方向和质量筛选 |
+| `/share/preset/{slug}` | 预设模板分享页，带预览、二维码和复制链接 |
 | `/feedback` | 用户问题反馈页 |
 
 ### 图片 API
@@ -130,6 +133,7 @@ OmniWall 使用 Cloudflare D1 保存运行数据，包括：
 | `/random` | 兼容旧接口 |
 | `/?query=nature` | 兼容旧 query 用法 |
 | `/api/bg` | 首页内部背景接口，需要短期签名凭证，不作为公开 API 使用 |
+| `/api/daily` | 每日精选接口，当天同方向稳定返回同一张图片 |
 
 常用参数：
 
@@ -143,6 +147,7 @@ OmniWall 使用 Cloudflare D1 保存运行数据，包括：
 | `min_width` / `min_height` | `min_width=1920` | 最小尺寸筛选 |
 | `aspect` | `aspect=wide` | 比例筛选：`wide` / `tall` / `square` |
 | `expand` | `expand=false` | 关闭智能关键词扩展 |
+| `quality` | `quality=high` | 图片质量偏好：`fast` / `balanced` / `high` |
 | `info` | `info=true` | 返回 JSON 元数据，不跳转图片 |
 | `reload` | `reload=true` | 强制刷新当前缓存 |
 
@@ -157,6 +162,9 @@ OmniWall 使用 Cloudflare D1 保存运行数据，包括：
 /api/random?preset=desktop-nature
 /api/random?query=city&color=blue&aspect=wide&min_width=1920
 /api/random?reload=true
+/api/random?query=nature&quality=high
+/api/daily?orientation=landscape
+/api/daily?orientation=portrait&info=true
 ```
 
 ### 管理后台
@@ -286,7 +294,27 @@ curl -H "Authorization: Bearer 你的ADMIN_PASSWORD" "https://你的域名/api/d
 | `SITE_NAME` | Variable | 站点名称；不配置时默认为 `OmniWall` |
 | `SITE_FAVICON` | Variable | 站点图标 URL；不配置或 URL 无效时使用内置默认图标 |
 
-站点名称会用于首页标题、页面标题、后台侧边栏、登录页和 Bot 帮助文本。页面顶部品牌区域会链接回首页 `/`。语言切换和深浅色切换按钮的文字固定为英文显示。
+站点名称会用于页面标题、后台侧边栏、登录页和 Bot 帮助文本。页面顶部品牌区域会链接回首页 `/`。语言切换和深浅色切换按钮的文字固定为英文显示。首页轮播标题、副标题、按钮文案、首页背景关键词和每日精选关键词可在后台“系统设置”中配置。
+
+### API Key（可选）
+
+后台“API Key 管理”可以创建面向外部调用者的 Key。系统只保存 Key 哈希，明文只在创建后显示一次。调用时推荐使用请求头，不建议放在 URL 中：
+
+```bash
+curl -H "Authorization: Bearer ow_xxx" "https://你的域名/api/random?query=nature&quality=high"
+# 或
+curl -H "X-API-Key: ow_xxx" "https://你的域名/api/random?info=true"
+```
+
+每个 Key 可以设置独立的分钟 / 小时 / 每日额度；未使用 Key 时仍按 IP 限速和封禁规则保护。
+
+### 新增体验功能
+
+- `/daily` 与 `/api/daily`：自动生成每日精选壁纸，并按日期和方向固定结果。
+- `/explore`：瀑布流探索页，可批量预览、复制 API 链接。
+- `/share/preset/{slug}`：预设模板分享页，提供预览、JSON、二维码和复制链接。
+- Telegram Bot 新增 `/daily` 和 `/random 关键词` 命令；飞书、钉钉仍作为出站通知 Webhook 使用。
+- 图源路由新增额度感知和失败冷却，避免短时间内反复打到异常图源。
 
 ---
 

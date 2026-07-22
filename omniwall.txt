@@ -24,7 +24,23 @@ const ALLOWED_ORIENTATIONS = ["landscape", "portrait", "squarish"];
 const ALLOWED_COLORS = ["black_and_white", "black", "white", "yellow", "orange", "red", "purple", "magenta", "green", "teal", "blue"];
 const ALLOWED_ASPECT_RATIOS = ["wide", "tall", "square"];
 const SOURCES = ["unsplash", "pexels", "pixabay", "bing"];
-const DEFAULT_SOURCE_ROUTING = { priority: ["unsplash", "pexels", "pixabay", "bing"], healthAware: true, skipUnhealthy: false };
+const DEFAULT_SOURCE_ROUTING = { priority: ["unsplash", "pexels", "pixabay", "bing"], healthAware: true, skipUnhealthy: false, quotaAware: true, failureCooldownSeconds: 300 };
+const DEFAULT_HOME_CONFIG = {
+  titlesZh: ["随机之美，触手可及", "发现无限灵感", "创意即刻呈现", "每一帧都是惊喜"],
+  titlesEn: ["Random beauty, one click away", "Discover endless inspiration", "Create with instant visuals", "Every frame is a surprise"],
+  heroZh: "高质量随机图片服务，为你的创作注入无限灵感。一键调用，即刻呈现。",
+  heroEn: "High-quality random image service for blogs, dashboards and creative projects. One simple API, instant visuals.",
+  randomZh: "🎲 随机看一张",
+  randomEn: "🎲 Random Image",
+  builderZh: "🎯 想要准确一点的照片",
+  builderEn: "🎯 Build a precise link",
+  docsZh: "📖 文档",
+  docsEn: "📖 Docs",
+  backgroundQuery: "wallpaper",
+  dailyQuery: "nature wallpaper",
+};
+const DEFAULT_API_KEY_LIMITS = { minute: 60, hour: 1000, day: 10000 };
+const DEFAULT_QUALITY_CONFIG = { default: "balanced", highThreshold: 58 };
 const DEFAULT_FEATURE_FLAGS = { keywordExpansion: true };
 const BUILTIN_PRESETS = [
   { slug: "desktop-nature", name: "Desktop Nature", description: "Landscape nature wallpapers for desktop backgrounds", params: { query: "nature landscape", orientation: "landscape", source: "random", expand: true }, builtin: true },
@@ -183,6 +199,10 @@ const I18N = {
     adminNote: "管理员备注",
     noFeedback: "暂无反馈",
     feedbackDetail: "反馈详情",
+    explore: "探索瀑布流",
+    daily: "每日精选",
+    apiKeys: "API Key 管理",
+    homeContent: "首页内容",
   },
   en: {
     dashboard: "Dashboard",
@@ -322,6 +342,10 @@ const I18N = {
     adminNote: "Admin Note",
     noFeedback: "No feedback yet",
     feedbackDetail: "Feedback Detail",
+    explore: "Explore",
+    daily: "Daily Pick",
+    apiKeys: "API Keys",
+    homeContent: "Homepage Content",
   },
 };
 
@@ -368,6 +392,8 @@ function publicNav(request, env, active = "") {
   const switchHref = langSwitchLink(request, lang);
   const nav = [
     ["/featured", lang === "en" ? "Featured" : "今日推荐", "featured"],
+    ["/explore", lang === "en" ? "Explore" : "探索", "explore"],
+    ["/daily", lang === "en" ? "Daily" : "每日精选", "daily"],
     ["/docs", lang === "en" ? "Docs" : "文档", "docs"],
     ["/url-builder", lang === "en" ? "URL Builder" : "链接生成器", "builder"],
     ["/feedback", lang === "en" ? "Feedback" : "💬 反馈", "feedback"],
@@ -387,6 +413,8 @@ const KV = {
   CONFIG_RATE_LIMITS: "config:rate_limits",
   CONFIG_BAN_DURATIONS: "config:ban_durations",
   CONFIG_SOURCE_ROUTING: "config:source_routing",
+  CONFIG_HOME: "config:home",
+  CONFIG_QUALITY: "config:quality",
   CONFIG_FEATURE_FLAGS: "config:feature_flags",
   CONFIG_MODERATION: "moderation:config",
   CONFIG_KEYWORDS: "moderation:keywords",
@@ -859,7 +887,7 @@ async function loadRuntimeConfig(db, env) {
   const now = Date.now();
   if (runtimeConfigCache && (now - runtimeConfigCacheTs) < RUNTIME_CONFIG_TTL_MS) return runtimeConfigCache;
   // Single round-trip for all config keys instead of sequential reads.
-  const keys = [KV.CONFIG_CACHE_TTL, KV.CONFIG_CUSTOM_BG, KV.CONFIG_BG_ACCESS, KV.CONFIG_TURNSTILE, KV.CONFIG_BANNER_CONTENT, KV.CONFIG_BANNER_TYPE, KV.CONFIG_RATE_LIMITS, KV.CONFIG_BAN_DURATIONS, KV.CONFIG_SOURCE_ROUTING, KV.CONFIG_FEATURE_FLAGS];
+  const keys = [KV.CONFIG_CACHE_TTL, KV.CONFIG_CUSTOM_BG, KV.CONFIG_BG_ACCESS, KV.CONFIG_TURNSTILE, KV.CONFIG_BANNER_CONTENT, KV.CONFIG_BANNER_TYPE, KV.CONFIG_RATE_LIMITS, KV.CONFIG_BAN_DURATIONS, KV.CONFIG_SOURCE_ROUTING, KV.CONFIG_HOME, KV.CONFIG_QUALITY, KV.CONFIG_FEATURE_FLAGS];
   const placeholders = keys.map(() => "?").join(",");
   const map = {};
   try {
@@ -875,10 +903,12 @@ async function loadRuntimeConfig(db, env) {
   const rateLimits = map[KV.CONFIG_RATE_LIMITS] ? safeJsonParse(map[KV.CONFIG_RATE_LIMITS], DEFAULT_RATE_LIMITS) : DEFAULT_RATE_LIMITS;
   const banDurations = map[KV.CONFIG_BAN_DURATIONS] ? safeJsonParse(map[KV.CONFIG_BAN_DURATIONS], DEFAULT_BAN_DURATIONS) : DEFAULT_BAN_DURATIONS;
   const sourceRouting = map[KV.CONFIG_SOURCE_ROUTING] ? safeJsonParse(map[KV.CONFIG_SOURCE_ROUTING], DEFAULT_SOURCE_ROUTING) : DEFAULT_SOURCE_ROUTING;
+  const home = map[KV.CONFIG_HOME] ? safeJsonParse(map[KV.CONFIG_HOME], DEFAULT_HOME_CONFIG) : DEFAULT_HOME_CONFIG;
+  const quality = map[KV.CONFIG_QUALITY] ? safeJsonParse(map[KV.CONFIG_QUALITY], DEFAULT_QUALITY_CONFIG) : DEFAULT_QUALITY_CONFIG;
   const featureFlags = map[KV.CONFIG_FEATURE_FLAGS] ? safeJsonParse(map[KV.CONFIG_FEATURE_FLAGS], DEFAULT_FEATURE_FLAGS) : DEFAULT_FEATURE_FLAGS;
   const bannerContent = bannerRaw ? bannerRaw.split(/\s*\|\|\|\s*/).filter(Boolean) : [];
   const dynamicRateLimits = await applyDynamicRateLimits(db, env, { ...DEFAULT_RATE_LIMITS, ...rateLimits });
-  const result = { cacheTtl, customBg, bgAccess: { ...DEFAULT_BG_ACCESS, ...bgAccess }, turnstile: { ...DEFAULT_TURNSTILE_CONFIG, ...turnstile }, bannerContent, bannerType, rateLimits: dynamicRateLimits, baseRateLimits: { ...DEFAULT_RATE_LIMITS, ...rateLimits }, banDurations: { ...DEFAULT_BAN_DURATIONS, ...banDurations }, sourceRouting: { ...DEFAULT_SOURCE_ROUTING, ...sourceRouting, priority: Array.isArray(sourceRouting.priority) ? sourceRouting.priority.filter(s => SOURCES.includes(s)) : DEFAULT_SOURCE_ROUTING.priority }, featureFlags: { ...DEFAULT_FEATURE_FLAGS, ...featureFlags } };
+  const result = { cacheTtl, customBg, bgAccess: { ...DEFAULT_BG_ACCESS, ...bgAccess }, turnstile: { ...DEFAULT_TURNSTILE_CONFIG, ...turnstile }, bannerContent, bannerType, rateLimits: dynamicRateLimits, baseRateLimits: { ...DEFAULT_RATE_LIMITS, ...rateLimits }, banDurations: { ...DEFAULT_BAN_DURATIONS, ...banDurations }, sourceRouting: { ...DEFAULT_SOURCE_ROUTING, ...sourceRouting, priority: Array.isArray(sourceRouting.priority) ? sourceRouting.priority.filter(s => SOURCES.includes(s)) : DEFAULT_SOURCE_ROUTING.priority }, home: normalizeHomeConfig(home), quality: { ...DEFAULT_QUALITY_CONFIG, ...quality }, featureFlags: { ...DEFAULT_FEATURE_FLAGS, ...featureFlags } };
   runtimeConfigCache = result;
   runtimeConfigCacheTs = now;
   return result;
@@ -939,6 +969,70 @@ function normalizeSlug(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 }
 
+function splitLines(value, fallback, limit = 4) {
+  const items = String(value || "").split(/\r?\n|\s*\|\|\|\s*/).map(s => s.trim()).filter(Boolean).slice(0, limit);
+  return items.length ? items : fallback;
+}
+
+function normalizeHomeConfig(value = {}) {
+  const cfg = { ...DEFAULT_HOME_CONFIG, ...(value || {}) };
+  return {
+    titlesZh: Array.isArray(cfg.titlesZh) ? cfg.titlesZh.map(s => String(s).trim()).filter(Boolean).slice(0, 6) : DEFAULT_HOME_CONFIG.titlesZh,
+    titlesEn: Array.isArray(cfg.titlesEn) ? cfg.titlesEn.map(s => String(s).trim()).filter(Boolean).slice(0, 6) : DEFAULT_HOME_CONFIG.titlesEn,
+    heroZh: String(cfg.heroZh || DEFAULT_HOME_CONFIG.heroZh).trim().slice(0, 220),
+    heroEn: String(cfg.heroEn || DEFAULT_HOME_CONFIG.heroEn).trim().slice(0, 220),
+    randomZh: String(cfg.randomZh || DEFAULT_HOME_CONFIG.randomZh).trim().slice(0, 80),
+    randomEn: String(cfg.randomEn || DEFAULT_HOME_CONFIG.randomEn).trim().slice(0, 80),
+    builderZh: String(cfg.builderZh || DEFAULT_HOME_CONFIG.builderZh).trim().slice(0, 80),
+    builderEn: String(cfg.builderEn || DEFAULT_HOME_CONFIG.builderEn).trim().slice(0, 80),
+    docsZh: String(cfg.docsZh || DEFAULT_HOME_CONFIG.docsZh).trim().slice(0, 80),
+    docsEn: String(cfg.docsEn || DEFAULT_HOME_CONFIG.docsEn).trim().slice(0, 80),
+    backgroundQuery: normalizeQuery(cfg.backgroundQuery || DEFAULT_HOME_CONFIG.backgroundQuery),
+    dailyQuery: normalizeQuery(cfg.dailyQuery || DEFAULT_HOME_CONFIG.dailyQuery),
+  };
+}
+
+function normalizeQuality(value, fallback = DEFAULT_QUALITY_CONFIG.default) {
+  const q = String(value || fallback || "balanced").toLowerCase();
+  return ["fast", "balanced", "high"].includes(q) ? q : "balanced";
+}
+
+function scoreImageQuality(image, params = {}, sourceHealth = {}) {
+  const w = Number(image?.width || 0);
+  const h = Number(image?.height || 0);
+  const pixels = w * h;
+  let score = 40;
+  if (pixels >= 3840 * 2160) score += 30;
+  else if (pixels >= 2560 * 1440) score += 24;
+  else if (pixels >= 1920 * 1080) score += 18;
+  else if (pixels >= 1280 * 720) score += 10;
+  if (params.orientation && params.orientation !== "all" && image.orientation === params.orientation) score += 10;
+  if (params.aspectRatio && w && h) {
+    const ratio = w / h;
+    if (params.aspectRatio === "wide" && ratio >= 1.6) score += 8;
+    if (params.aspectRatio === "tall" && ratio <= 0.75) score += 8;
+    if (params.aspectRatio === "square" && Math.abs(w - h) / Math.max(w, h) <= 0.18) score += 8;
+  }
+  const health = sourceHealth[image?.source || params.source];
+  if (health?.ok) score += 6;
+  if (health?.latency) score -= Math.min(8, Math.round(Number(health.latency) / 700));
+  if (image?.author && image.author !== "Unknown") score += 3;
+  if (image?.source_url) score += 2;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function applyQualityScores(images, params = {}, sourceHealth = {}) {
+  const q = normalizeQuality(params.quality);
+  const scored = (Array.isArray(images) ? images : []).map(img => ({ ...img, quality_score: scoreImageQuality(img, params, sourceHealth), quality_mode: q }));
+  if (q === "fast") return scored;
+  scored.sort((a, b) => Number(b.quality_score || 0) - Number(a.quality_score || 0));
+  if (q === "high") {
+    const high = scored.filter(img => Number(img.quality_score || 0) >= DEFAULT_QUALITY_CONFIG.highThreshold);
+    return high.length ? high : scored;
+  }
+  return scored;
+}
+
 function canonicalParamsForCache(params) {
   return {
     query: normalizeQuery(params.query).toLowerCase(),
@@ -949,6 +1043,7 @@ function canonicalParamsForCache(params) {
     aspect_ratio: params.aspectRatio || "",
     safe: params.safeMode === false ? "0" : "1",
     expand: params.expand === false ? "0" : "1",
+    quality: normalizeQuality(params.quality),
   };
 }
 
@@ -973,6 +1068,7 @@ function buildApiPath(params = {}, includeInfo = false) {
   set("min_width", params.minWidth || params.min_width);
   set("min_height", params.minHeight || params.min_height);
   set("aspect", params.aspectRatio || params.aspect || params.aspect_ratio);
+  if (params.quality && params.quality !== "balanced") u.searchParams.set("quality", params.quality);
   if (params.expand === false) u.searchParams.set("expand", "false");
   if (includeInfo) u.searchParams.set("info", "true");
   return u.pathname + u.search;
@@ -1164,9 +1260,30 @@ async function checkWhitelist(db, ipHash, env) {
   } catch (_) { return false; }
 }
 
-async function checkRateLimit(request, env, config) {
-  const ipHash = await hashIdentifier(getClientIp(request), env.ADMIN_PASSWORD || "fallback");
-  if (await checkWhitelist(env.DB, ipHash, env)) return { ok: true, ipHash, whitelisted: true };
+async function getApiKeyCredential(request) {
+  const auth = request.headers.get("Authorization") || "";
+  if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+  return (request.headers.get("X-API-Key") || "").trim();
+}
+
+async function authenticateApiKey(request, env) {
+  const key = await getApiKeyCredential(request);
+  if (!key) return { ok: true, key: null };
+  if (!/^ow_[A-Za-z0-9_-]{24,}$/.test(key)) return { ok: false, response: publicApiErrorResponse({ error: "invalid_api_key", message: "API Key 格式无效" }, 401, { "Access-Control-Allow-Origin": "*" }) };
+  const keyHash = await sha256Hex(key + ":" + (env.ADMIN_PASSWORD || "fallback"));
+  try {
+    const row = await env.DB.prepare("SELECT id, name, key_prefix, status, minute_limit, hour_limit, day_limit FROM api_keys WHERE key_hash = ?").bind(keyHash).first();
+    if (!row || row.status !== "active") return { ok: false, response: publicApiErrorResponse({ error: "invalid_api_key", message: "API Key 不存在或已禁用" }, 401, { "Access-Control-Allow-Origin": "*" }) };
+    await env.DB.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?").bind(row.id).run();
+    return { ok: true, key: { id: row.id, name: row.name, prefix: row.key_prefix, identity: `api:${row.id}`, limits: { minute: row.minute_limit || DEFAULT_API_KEY_LIMITS.minute, hour: row.hour_limit || DEFAULT_API_KEY_LIMITS.hour, day: row.day_limit || DEFAULT_API_KEY_LIMITS.day } } };
+  } catch (_) {
+    return { ok: false, response: publicApiErrorResponse({ error: "api_key_check_failed", message: "API Key 校验失败" }, 500, { "Access-Control-Allow-Origin": "*" }) };
+  }
+}
+
+async function checkRateLimit(request, env, config, principal = null) {
+  const ipHash = principal?.identity ? await hashIdentifier(principal.identity, env.ADMIN_PASSWORD || "fallback") : await hashIdentifier(getClientIp(request), env.ADMIN_PASSWORD || "fallback");
+  if (!principal && await checkWhitelist(env.DB, ipHash, env)) return { ok: true, ipHash, whitelisted: true };
   const now = Math.floor(Date.now() / 1000);
   let data;
   try {
@@ -1174,9 +1291,9 @@ async function checkRateLimit(request, env, config) {
     data = row ? JSON.parse(row.timestamps) : { m: [], h: [], d: [] };
   } catch (_) { data = { m: [], h: [], d: [] }; }
   const windows = [
-    ["minute", 60, config.rateLimits.minute, "m"],
-    ["hour", 3600, config.rateLimits.hour, "h"],
-    ["day", 86400, config.rateLimits.day, "d"],
+    ["minute", 60, principal?.limits?.minute || config.rateLimits.minute, "m"],
+    ["hour", 3600, principal?.limits?.hour || config.rateLimits.hour, "h"],
+    ["day", 86400, principal?.limits?.day || config.rateLimits.day, "d"],
   ];
   for (const [name, ttl, limit, code] of windows) {
     data[code] = data[code].filter(t => now - t < ttl);
@@ -1259,6 +1376,13 @@ async function applyPublicSecurity(request, env, ctx, config) {
     return await handleRateLimitViolation(request, env, ctx, rate.ipHash, rate.window, config);
   }
   return null;
+}
+
+async function applyApiKeyLimit(request, env, config, apiKey) {
+  if (!apiKey) return null;
+  const rate = await checkRateLimit(request, env, config, apiKey);
+  if (rate.ok) return null;
+  return publicSecurityErrorResponse(request, config, "rate_limited", { message: `API Key 调用频率过快（${rate.window}窗口）`, reason: `api_key_${rate.window}`, retryAfter: rate.retryAfter || 60 }, 429, { "Retry-After": String(rate.retryAfter || 60), "Access-Control-Allow-Origin": "*" });
 }
 
 async function buildCacheKey(source, queryOrParams, orientation) {
@@ -1525,8 +1649,8 @@ async function getAllPresets(db) {
 async function trackRequestAnalytics(env, request, params, result, startMs, ipHash, status = 200) {
   try {
     const latency = Math.max(0, Date.now() - startMs);
-    await env.DB.prepare("INSERT INTO request_analytics (path, source, query, orientation, color, aspect_ratio, cache_hit, ok, status, latency, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .bind(new URL(request.url).pathname, result?.source || params.source || "random", String(params.originalQuery || params.query || "").slice(0, 120), params.orientation || "all", params.color || "", params.aspectRatio || "", result?.cacheHit ? 1 : 0, result?.ok ? 1 : 0, Number(status) || 200, latency, ipHash || "")
+    await env.DB.prepare("INSERT INTO request_analytics (path, source, query, orientation, color, aspect_ratio, cache_hit, ok, status, latency, ip_hash, api_key_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(new URL(request.url).pathname, result?.source || params.source || "random", String(params.originalQuery || params.query || "").slice(0, 120), params.orientation || "all", params.color || "", params.aspectRatio || "", result?.cacheHit ? 1 : 0, result?.ok ? 1 : 0, Number(status) || 200, latency, ipHash || "", params.apiKeyId || "")
       .run();
   } catch (_) {}
 }
@@ -1691,6 +1815,36 @@ async function getLatestSourceHealthMap(env) {
   return map;
 }
 
+async function getSourceCooldownMap(env) {
+  const map = {};
+  try {
+    const rows = await env.DB.prepare("SELECT source, fail_count, disabled_until FROM source_failures WHERE disabled_until IS NOT NULL AND julianday(disabled_until) > julianday('now')").all();
+    for (const r of (rows.results || [])) map[r.source] = { failCount: r.fail_count, disabledUntil: r.disabled_until };
+  } catch (_) {}
+  return map;
+}
+
+async function recordSourceFailure(env, source, config = {}) {
+  const seconds = Math.max(60, Number(config.sourceRouting?.failureCooldownSeconds || DEFAULT_SOURCE_ROUTING.failureCooldownSeconds));
+  try {
+    await env.DB.prepare("INSERT INTO source_failures (source, fail_count, last_error, disabled_until, updated_at) VALUES (?, 1, ?, datetime('now', ?), datetime('now')) ON CONFLICT(source) DO UPDATE SET fail_count = fail_count + 1, last_error = excluded.last_error, disabled_until = datetime('now', ?), updated_at = datetime('now')")
+      .bind(source, "fetch_failed", `+${seconds} seconds`, `+${seconds} seconds`).run();
+  } catch (_) {}
+}
+
+async function recordSourceSuccess(env, source) {
+  try { await env.DB.prepare("DELETE FROM source_failures WHERE source = ?").bind(source).run(); } catch (_) {}
+}
+
+async function getQuotaMap(env) {
+  const map = {};
+  try {
+    const rows = await env.DB.prepare("SELECT source, limit_val, remaining FROM quota").all();
+    for (const r of (rows.results || [])) map[r.source] = { limit: Number(r.limit_val || 0), remaining: Number(r.remaining || 0) };
+  } catch (_) {}
+  return map;
+}
+
 async function chooseSourceOrder(requestedSource, availableSources, params, env = null, config = {}) {
   const source = String(requestedSource || "random").toLowerCase();
   if (source && source !== "random" && !SOURCES.includes(source)) return [];
@@ -1702,14 +1856,19 @@ async function chooseSourceOrder(requestedSource, availableSources, params, env 
   const base = availableSources.filter(s => priority.includes(s));
   const candidates = base.filter(s => s !== "bing").length ? base.filter(s => s !== "bing") : base;
   const health = routing.healthAware && env ? await getLatestSourceHealthMap(env) : {};
+  const cooldowns = env ? await getSourceCooldownMap(env) : {};
+  const quotas = routing.quotaAware && env ? await getQuotaMap(env) : {};
   const scored = candidates.map(s => {
     const h = health[s];
     const priorityScore = priority.indexOf(s) >= 0 ? priority.indexOf(s) : 99;
     const unhealthyPenalty = h && h.ok === false && !h.stale ? 50 : 0;
     const stalePenalty = h?.stale ? 8 : 0;
     const latencyPenalty = h?.latency ? Math.min(10, Math.round(h.latency / 500)) : 0;
-    return { source: s, score: priorityScore * 10 + unhealthyPenalty + stalePenalty + latencyPenalty, unhealthy: h && h.ok === false && !h.stale };
-  }).filter(item => !(routing.skipUnhealthy && item.unhealthy));
+    const quota = quotas[s];
+    const quotaPenalty = quota?.limit ? Math.max(0, 20 - Math.round((quota.remaining / quota.limit) * 20)) : 0;
+    const cooled = !!cooldowns[s];
+    return { source: s, score: priorityScore * 10 + unhealthyPenalty + stalePenalty + latencyPenalty + quotaPenalty + (cooled ? 80 : 0), unhealthy: h && h.ok === false && !h.stale, cooled };
+  }).filter(item => !(routing.skipUnhealthy && (item.unhealthy || item.cooled)));
   if (!scored.length) return shuffle(candidates);
   scored.sort((a, b) => a.score - b.score || Math.random() - 0.5);
   return scored.map(x => x.source);
@@ -1756,24 +1915,75 @@ async function fetchWithFallback(params, env, ctx, config) {
       const result = await fetchSource(source, params, env, ctx);
       if (!result.ok) {
         attempts.push({ source, ok: false, error: result.error, status: result.status });
+        ctx.waitUntil(recordSourceFailure(env, source, config));
         ctx.waitUntil(appendLog(env.DB, "warn", `Image source failed: ${source}`, { status: result.status, error: result.error }));
         continue;
       }
-      const filteredImages = filterImagesByParams(result.images, params);
+      ctx.waitUntil(recordSourceSuccess(env, source));
+      const healthMap = await getLatestSourceHealthMap(env);
+      const filteredImages = applyQualityScores(filterImagesByParams(result.images, params), params, healthMap);
       if (!filteredImages.length) {
         attempts.push({ source, ok: false, error: "No images match filters", status: 404 });
         continue;
       }
       await putCachedPool(env.DB, cacheKey, source, params, filteredImages, config.cacheTtl, env.ADMIN_PASSWORD, env);
-      const image = selectRandomImage(filteredImages, cacheKey) || filteredImages[0];
+      const qualityPool = normalizeQuality(params.quality) === "high" ? filteredImages.slice(0, Math.max(1, Math.ceil(filteredImages.length / 3))) : filteredImages;
+      const image = selectRandomImage(qualityPool, cacheKey) || qualityPool[0] || filteredImages[0];
       await maybeTrackDownload(image, env, ctx);
       return { ok: true, source, image: imagePublicCopy(image), cacheHit: false, cacheKey };
     } catch (error) {
       attempts.push({ source, ok: false, error: error.message });
+      ctx.waitUntil(recordSourceFailure(env, source, config));
       ctx.waitUntil(appendLog(env.DB, "error", `Image source exception: ${source}`, { error: error.message }));
     }
   }
   return { ok: false, status: 503, error: "All image sources failed", attempts };
+}
+
+async function createApiKey(env, name, limits = {}) {
+  const plain = `ow_${randomString(34)}`;
+  const hash = await sha256Hex(plain + ":" + (env.ADMIN_PASSWORD || "fallback"));
+  const prefix = plain.slice(0, 10);
+  const finalLimits = { ...DEFAULT_API_KEY_LIMITS, ...limits };
+  await env.DB.prepare("INSERT INTO api_keys (name, key_hash, key_prefix, status, minute_limit, hour_limit, day_limit, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, datetime('now'), datetime('now'))")
+    .bind(String(name || "API Key").trim().slice(0, 80), hash, prefix, finalLimits.minute, finalLimits.hour, finalLimits.day).run();
+  return plain;
+}
+
+async function listApiKeys(env) {
+  try {
+    const rows = await env.DB.prepare("SELECT id, name, key_prefix, status, minute_limit, hour_limit, day_limit, last_used_at, created_at FROM api_keys ORDER BY id DESC LIMIT 100").all();
+    return rows.results || [];
+  } catch (_) { return []; }
+}
+
+async function getDailyImage(env, ctx, config, options = {}) {
+  const date = options.date || todayUtc8();
+  const orientation = normalizeOrientation(options.orientation || "landscape");
+  const key = `${date}:${orientation}`;
+  try {
+    const row = await env.DB.prepare("SELECT payload FROM daily_images WHERE date = ? AND orientation = ?").bind(date, orientation).first();
+    if (row?.payload) return { ok: true, image: safeJsonParse(row.payload, null), cacheHit: true, date, orientation };
+  } catch (_) {}
+  const params = {
+    query: normalizeQuery(options.query || config.home?.dailyQuery || "nature wallpaper"),
+    orientation,
+    source: "random",
+    color: "",
+    minWidth: orientation === "landscape" ? 1920 : 0,
+    minHeight: orientation === "portrait" ? 1600 : 0,
+    aspectRatio: orientation === "landscape" ? "wide" : orientation === "portrait" ? "tall" : "",
+    safeMode: true,
+    expand: true,
+    forceReload: false,
+    hasExplicitQuery: false,
+    quality: "high",
+  };
+  const result = await fetchWithFallback(params, env, ctx, config);
+  if (!result.ok) return result;
+  const image = { ...imagePublicCopy(result.image), daily_date: date, daily_orientation: orientation, cache_hit: result.cacheHit, cache_key: result.cacheKey };
+  try { await env.DB.prepare("INSERT OR REPLACE INTO daily_images (date, orientation, payload, source, image_id, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))").bind(date, orientation, JSON.stringify(image), image.source || result.source || "random", imageIdentity(image)).run(); } catch (_) {}
+  return { ok: true, image, cacheHit: false, date, orientation };
 }
 
 async function getQuotaRows(store, env) {
@@ -1811,7 +2021,7 @@ async function pingSource(source, env) {
   const timer = setTimeout(() => ctrl.abort(), 8000);
   try {
     const res = await fetch(url, { ...opts, signal: ctrl.signal });
-    return { ok: res.status < 500, latency: Date.now() - start, status: res.status };
+    return { ok: res.status >= 200 && res.status < 400, latency: Date.now() - start, status: res.status };
   } catch (e) {
     return { ok: false, latency: Date.now() - start, status: 0, error: e.message };
   } finally {
@@ -2505,22 +2715,24 @@ document.addEventListener('DOMContentLoaded',function(){if(document.cookie.index
 
 async function renderHome(request, url, env, config) {
   const site = siteName(env);
+  const homeCfg = normalizeHomeConfig(config.home || DEFAULT_HOME_CONFIG);
   const bgSessionId = randomString(24);
   const bgToken = await makeBgAccessToken(env, config, bgSessionId);
-  const bgImagePath = `/api/bg?orientation=landscape&bg_token=${encodeURIComponent(bgToken)}`;
-  const bgInfoPath = `/api/bg?info=true&bg_token=${encodeURIComponent(bgToken)}`;
+  const bgQuery = encodeURIComponent(homeCfg.backgroundQuery || "wallpaper");
+  const bgImagePath = `/api/bg?orientation=landscape&query=${bgQuery}&bg_token=${encodeURIComponent(bgToken)}`;
+  const bgInfoPath = `/api/bg?info=true&orientation=landscape&query=${bgQuery}&bg_token=${encodeURIComponent(bgToken)}`;
   const bgImageJs = JSON.stringify(bgImagePath);
   const bgInfoJs = JSON.stringify(bgInfoPath);
   const bg = config.customBg ? safeUrl(config.customBg, "") : `${url.origin}${bgImagePath}`;
   const favicon = escapeAttr(siteFaviconHref(env));
   const lang = getLang(request);
   const en = lang === "en";
-  const homeTitles = en ? ["Random beauty, one click away", "Discover endless inspiration", "Create with instant visuals", "Every frame is a surprise"] : ["随机之美，触手可及", "发现无限灵感", "创意即刻呈现", "每一帧都是惊喜"];
+  const homeTitles = en ? homeCfg.titlesEn : homeCfg.titlesZh;
   const homeText = {
-    hero: en ? "High-quality random image service for blogs, dashboards and creative projects. One simple API, instant visuals." : "高质量随机图片服务，为你的创作注入无限灵感。一键调用，即刻呈现。",
-    random: en ? "🎲 Random Image" : "🎲 随机看一张",
-    builder: en ? "🎯 Build a precise link" : "🎯 想要准确一点的照片",
-    docs: en ? "📖 Docs" : "📖 文档",
+    hero: en ? homeCfg.heroEn : homeCfg.heroZh,
+    random: en ? homeCfg.randomEn : homeCfg.randomZh,
+    builder: en ? homeCfg.builderEn : homeCfg.builderZh,
+    docs: en ? homeCfg.docsEn : homeCfg.docsZh,
     cards: en ? [["✨", "Random inspiration", "Every refresh brings a fresh visual experience for your designs, blogs and apps."], ["⚡", "Fast API", "Clean API links with keyword, orientation and source switching."], ["🌐", "Chinese keywords", "Chinese search terms are translated automatically before image search."]] : [["✨", "随机灵感", "每次刷新都是全新视觉体验，为你的设计、博客或项目提供源源不断的高质量图片素材。"], ["⚡", "极速调用", "简洁的 API 接口，支持关键词、方向、多源切换。几行代码即可接入，无需复杂配置。"], ["🌐", "中文支持", "支持中文关键词自动翻译，无需手动转换。输入“猫”即可获得 cat 相关的高质量图片。"]],
     latest: en ? "📢 Latest Updates" : "📢 最新动态",
     viewAll: en ? "View all →" : "查看全部 →",
@@ -2560,7 +2772,7 @@ async function renderFeatured(request, url, env, config) {
     const jsonHref = buildApiPath({ preset: preset.slug }, true);
     const params = preset.params || {};
     const pills = [params.query, params.orientation, params.color, params.source].filter(Boolean).map(v => `<span class="pill">${escapeHtml(v)}</span>`).join(" ");
-    return `<article class="card feature-card"><img src="${escapeAttr(href)}" alt="${escapeAttr(preset.name)}" loading="lazy"><div class="feature-body"><h3>${escapeHtml(preset.name)}</h3><p>${escapeHtml(preset.description || "")}</p><div class="preset-pills">${pills}</div><div class="toolbar" style="margin-top:16px"><a class="btn" href="${escapeAttr(href)}" target="_blank">${en ? "Open" : "打开图片"}</a><a class="btn" href="${escapeAttr(jsonHref)}" target="_blank">JSON</a><a class="btn" href="/url-builder?preset=${escapeAttr(preset.slug)}${en ? "&lang=en" : ""}">${en ? "Customize" : "继续定制"}</a></div></div></article>`;
+    return `<article class="card feature-card"><img src="${escapeAttr(href)}" alt="${escapeAttr(preset.name)}" loading="lazy"><div class="feature-body"><h3>${escapeHtml(preset.name)}</h3><p>${escapeHtml(preset.description || "")}</p><div class="preset-pills">${pills}</div><div class="toolbar" style="margin-top:16px"><a class="btn" href="${escapeAttr(href)}" target="_blank">${en ? "Open" : "打开图片"}</a><a class="btn" href="${escapeAttr(jsonHref)}" target="_blank">JSON</a><a class="btn" href="/url-builder?preset=${escapeAttr(preset.slug)}${en ? "&lang=en" : ""}">${en ? "Customize" : "继续定制"}</a><a class="btn" href="/share/preset/${escapeAttr(preset.slug)}${en ? "?lang=en" : ""}">${en ? "Share" : "分享"}</a></div></div></article>`;
   }).join("");
   return htmlResponse(`<!doctype html><html lang="${en ? "en" : "zh-CN"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="${favicon}"><title>${escapeHtml(title)} — ${escapeHtml(site)}</title>${commonPublicAssets()}<style>.feature-hero{max-width:860px;margin:0 auto 34px;text-align:center}.feature-hero h1{font-size:clamp(34px,6vw,64px);margin:0 0 14px;font-weight:900;background:linear-gradient(135deg,#e0e7ff,#a78bfa,#22d3ee);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.feature-hero p{color:var(--muted);line-height:1.8;font-size:18px}.feature-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:22px}.feature-card{padding:0;overflow:hidden}.feature-card img{width:100%;height:210px;object-fit:cover;display:block;background:rgba(0,0,0,.22)}.feature-body{padding:24px}.preset-pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}</style></head><body>${renderBanner(config)}<main class="shell">${publicNav(request, env, "featured")}<section class="feature-hero"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(desc)}</p><div class="actions" style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap"><a class="btn btn-primary" href="/api/random?info=true" target="_blank">${en ? "Try random JSON" : "试试随机 JSON"}</a><a class="btn" href="/url-builder${en ? "?lang=en" : ""}">${en ? "Build my own" : "自己生成链接"}</a></div></section><section class="feature-grid">${cards}</section></main></body></html>`);
 }
@@ -2602,6 +2814,41 @@ async function renderPresets(env, token, session, csrf, config, flash, request) 
   }).join("");
   const body = `<form class="card" method="POST" action="/${escapeAttr(token)}/api/presets/add${en ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><h2>${en ? "Add preset" : "添加预设"}</h2><div class="grid"><div><label>Slug</label><input name="slug" placeholder="desktop-blue"></div><div><label>${en ? "Name" : "名称"}</label><input name="name" placeholder="Desktop Blue"></div></div><label>${en ? "Description" : "描述"}</label><input name="description" placeholder="${en ? "Short preset summary" : "简短说明"}"><div class="grid"><div><label>${en ? "Keyword" : "关键词"}</label><input name="query" placeholder="nature / city night"></div><div><label>${en ? "Orientation" : "方向"}</label><select name="orientation"><option value="all">${en ? "Any" : "任意"}</option><option value="landscape">landscape</option><option value="portrait">portrait</option><option value="squarish">squarish</option></select></div><div><label>${en ? "Source" : "图源"}</label><select name="source"><option value="random">random</option>${SOURCES.map(s => `<option value="${s}">${s}</option>`).join("")}</select></div><div><label>${en ? "Color" : "颜色"}</label><select name="color"><option value="">-</option>${ALLOWED_COLORS.map(c => `<option value="${c}">${c}</option>`).join("")}</select></div></div><button>${en ? "Save preset" : "保存预设"}</button></form><div class="card"><h2>${en ? "Preset list" : "预设列表"}</h2><table><tr><th>${en ? "Preset" : "预设"}</th><th>${en ? "Description" : "描述"}</th><th>${en ? "Params" : "参数"}</th><th>API</th><th>${en ? "Action" : "操作"}</th></tr>${rows}</table></div>`;
   return renderAdminLayout({ token, active: "presets", title: en ? "Presets" : "预设模板", body, csrfToken: csrf, flash, favicon: siteFaviconHref(env), site: siteName(env), lang, request });
+}
+
+async function renderPresetShare(request, url, env, config, slug) {
+  const site = siteName(env);
+  const lang = getLang(request);
+  const en = lang === "en";
+  const preset = await getPresetBySlug(env.DB, slug);
+  if (!preset) return renderPublicErrorPage({ request, config, status: 404, code: "preset_not_found", title: en ? "Preset not found" : "预设不存在", message: en ? "This preset may be private or removed." : "这个预设可能已关闭公开访问或已被删除。", actionText: en ? "View featured" : "查看推荐", actionHref: "/featured", site });
+  const api = buildApiPath({ preset: preset.slug }, false);
+  const json = buildApiPath({ preset: preset.slug }, true);
+  const shareUrl = `${url.origin}/share/preset/${encodeURIComponent(preset.slug)}`;
+  const qr = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(shareUrl)}`;
+  const params = JSON.stringify(preset.params || {}, null, 2);
+  const title = en ? "Preset Share" : "预设分享";
+  return htmlResponse(`<!doctype html><html lang="${en ? "en" : "zh-CN"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="${escapeAttr(siteFaviconHref(env))}"><title>${escapeHtml(preset.name)} — ${escapeHtml(site)}</title>${commonPublicAssets()}<style>.share-hero{text-align:center;max-width:820px;margin:0 auto 28px}.share-hero h1{font-size:clamp(34px,6vw,64px);margin:0 0 12px;background:linear-gradient(135deg,#e0e7ff,#a78bfa,#22d3ee);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.share-layout{display:grid;grid-template-columns:minmax(0,1fr) 240px;gap:22px}.share-preview{width:100%;height:360px;object-fit:cover;border-radius:20px;border:1px solid var(--line)}.qr{background:white;padding:16px;border-radius:18px;width:212px}@media(max-width:760px){.share-layout{grid-template-columns:1fr}.qr{width:180px}}</style></head><body>${renderBanner(config)}<main class="shell">${publicNav(request, env, "featured")}<section class="share-hero"><h1>${escapeHtml(preset.name)}</h1><p>${escapeHtml(preset.description || (en ? "Shareable OmniWall preset" : "可分享的 OmniWall 预设"))}</p></section><section class="share-layout"><div class="card"><img class="share-preview" src="${escapeAttr(api)}" alt="${escapeAttr(preset.name)}"><div class="toolbar" style="margin-top:18px"><a class="btn btn-primary" href="${escapeAttr(api)}" target="_blank">${en ? "Open image" : "打开图片"}</a><a class="btn" href="${escapeAttr(json)}" target="_blank">JSON</a><a class="btn" href="/url-builder?preset=${escapeAttr(preset.slug)}${en ? "&lang=en" : ""}">${en ? "Customize" : "继续定制"}</a><button class="btn" onclick="navigator.clipboard.writeText('${escapeAttr(shareUrl)}').then(function(){toast('${en ? "Copied" : "已复制"}')})">${en ? "Copy share link" : "复制分享链接"}</button></div><h3>${en ? "Parameters" : "参数"}</h3><pre>${escapeHtml(params)}</pre></div><aside class="card" style="text-align:center"><img class="qr" src="${escapeAttr(qr)}" alt="QR"><p class="muted">${en ? "QR code for this share page" : "扫码打开此分享页"}</p><code>${escapeHtml(preset.slug)}</code></aside></section></main></body></html>`);
+}
+
+async function renderDaily(request, url, env, config) {
+  const site = siteName(env);
+  const lang = getLang(request);
+  const en = lang === "en";
+  const title = en ? "Daily Picks" : "每日精选";
+  const desc = en ? "Stable daily wallpapers generated from your OmniWall sources." : "从 OmniWall 多图源自动生成的稳定每日壁纸。";
+  const cards = ["landscape", "portrait", "squarish"].map(o => {
+    const api = `/api/daily?orientation=${o}`;
+    return `<article class="card feature-card"><img src="${api}" alt="${o}" loading="lazy"><div class="feature-body"><h3>${o}</h3><p>${en ? "Same image for the current CST day." : "当天固定返回同一张图片。"}</p><div class="toolbar" style="margin-top:16px"><a class="btn" href="${api}" target="_blank">${en ? "Open" : "打开"}</a><a class="btn" href="${api}&info=true" target="_blank">JSON</a></div></div></article>`;
+  }).join("");
+  return htmlResponse(`<!doctype html><html lang="${en ? "en" : "zh-CN"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="${escapeAttr(siteFaviconHref(env))}"><title>${escapeHtml(title)} — ${escapeHtml(site)}</title>${commonPublicAssets()}<style>.feature-hero{max-width:860px;margin:0 auto 34px;text-align:center}.feature-hero h1{font-size:clamp(34px,6vw,64px);margin:0 0 14px;font-weight:900;background:linear-gradient(135deg,#e0e7ff,#a78bfa,#22d3ee);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.feature-hero p{color:var(--muted);line-height:1.8;font-size:18px}.feature-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:22px}.feature-card{padding:0;overflow:hidden}.feature-card img{width:100%;height:240px;object-fit:cover;display:block;background:rgba(0,0,0,.22)}.feature-body{padding:24px}</style></head><body>${renderBanner(config)}<main class="shell">${publicNav(request, env, "daily")}<section class="feature-hero"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(desc)}</p></section><section class="feature-grid">${cards}</section></main></body></html>`);
+}
+
+async function renderExplore(request, url, env, config) {
+  const site = siteName(env);
+  const lang = getLang(request);
+  const en = lang === "en";
+  return htmlResponse(`<!doctype html><html lang="${en ? "en" : "zh-CN"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="${escapeAttr(siteFaviconHref(env))}"><title>${en ? "Explore" : "探索瀑布流"} — ${escapeHtml(site)}</title>${commonPublicAssets()}<style>.explore-head{text-align:center;max-width:860px;margin:0 auto 26px}.explore-head h1{font-size:clamp(34px,6vw,64px);margin:0 0 12px;background:linear-gradient(135deg,#e0e7ff,#a78bfa,#22d3ee);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.explore-form{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:10px;align-items:end}.waterfall{columns:4 220px;column-gap:18px;margin-top:28px}.wcard{break-inside:avoid;margin:0 0 18px;background:var(--glass);border:1px solid var(--line);border-radius:18px;overflow:hidden}.wcard img{width:100%;display:block;background:#000}.wbody{padding:14px}.wbody strong{display:block;margin-bottom:6px}.wbody p{font-size:12px;color:var(--muted);margin:0 0 10px}.smallbtn{padding:7px 10px;border-radius:9px;font-size:12px;min-height:auto}@media(max-width:760px){.explore-form{grid-template-columns:1fr}.waterfall{columns:1}}</style></head><body>${renderBanner(config)}<main class="shell">${publicNav(request, env, "explore")}<section class="explore-head"><h1>${en ? "Explore wallpapers" : "探索壁纸"}</h1><p>${en ? "Search, filter and copy ready-to-use OmniWall image links." : "搜索、筛选并复制可直接使用的 OmniWall 图片链接。"}</p></section><section class="card"><div class="explore-form"><label>${en ? "Keyword" : "关键词"}<input id="q" value="nature"></label><label>${en ? "Source" : "图源"}<select id="src"><option value="random">random</option>${SOURCES.map(s => `<option value="${s}">${s}</option>`).join("")}</select></label><label>${en ? "Orientation" : "方向"}<select id="ori"><option value="landscape">landscape</option><option value="portrait">portrait</option><option value="squarish">squarish</option><option value="all">all</option></select></label><label>${en ? "Quality" : "质量"}<select id="qual"><option value="balanced">balanced</option><option value="high">high</option><option value="fast">fast</option></select></label><button id="load" type="button">${en ? "Load" : "加载"}</button></div></section><section id="waterfall" class="waterfall"></section><p style="text-align:center"><button id="more" type="button">${en ? "Load more" : "加载更多"}</button></p></main><script>(function(){var box=document.getElementById('waterfall');function api(){var u='/api/random?info=true';var q=document.getElementById('q').value.trim();if(q)u+='&query='+encodeURIComponent(q);var s=document.getElementById('src').value;if(s&&s!=='random')u+='&source='+s;var o=document.getElementById('ori').value;if(o&&o!=='all')u+='&orientation='+o;var qu=document.getElementById('qual').value;if(qu)u+='&quality='+qu;return u}function esc(x){return String(x||'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}function card(d){var link='/api/random?query='+encodeURIComponent(document.getElementById('q').value.trim()||'wallpaper')+'&orientation='+document.getElementById('ori').value+'&source='+document.getElementById('src').value;var img=esc(d.url);return '<article class="wcard"><img src="'+img+'" alt=""><div class="wbody"><strong>'+esc(d.title||d.source||'Image')+'</strong><p>'+esc(d.author||'')+' · '+esc(d.source||'')+' · Q '+esc(d.quality_score||'-')+'</p><div class="toolbar"><a class="btn smallbtn" href="'+img+'" target="_blank" rel="noopener">${en ? "Open" : "打开"}</a><button class="btn smallbtn" data-copy="'+esc(link)+'">${en ? "Copy API" : "复制 API"}</button></div></div></article>'}function load(reset){if(reset)box.innerHTML='';Promise.all(Array.from({length:8},function(){return fetch(api()).then(function(r){return r.json()}).catch(function(){return null})})).then(function(list){box.insertAdjacentHTML('beforeend',list.filter(Boolean).filter(function(x){return x.url}).map(card).join(''))})}document.addEventListener('click',function(e){var c=e.target.getAttribute&&e.target.getAttribute('data-copy');if(c)navigator.clipboard.writeText(c).then(function(){toast('${en ? "Copied" : "已复制"}')})});document.getElementById('load').onclick=function(){load(true)};document.getElementById('more').onclick=function(){load(false)};load(true)})();</script></body></html>`);
 }
 
 async function renderDocs(request, url, env, config) {
@@ -2745,13 +2992,14 @@ async function handleBgImage(request, env, ctx, config) {
     }
   }
   const params = {
-    query: normalizeQuery(url.searchParams.get("query") || "wallpaper"),
+    query: normalizeQuery(url.searchParams.get("query") || config.home?.backgroundQuery || "wallpaper"),
     orientation: normalizeOrientation(url.searchParams.get("orientation")),
     source: (url.searchParams.get("source") || "random").toLowerCase(),
     color: normalizeColor(url.searchParams.get("color")),
     minWidth: normalizeDimension(url.searchParams.get("min_width") || url.searchParams.get("minWidth")),
     minHeight: normalizeDimension(url.searchParams.get("min_height") || url.searchParams.get("minHeight")),
     aspectRatio: normalizeAspectRatio(url.searchParams.get("aspect") || url.searchParams.get("aspect_ratio")),
+    quality: normalizeQuality(url.searchParams.get("quality"), config.quality?.default),
     safeMode: true,
     expand: normalizeBooleanParam(url.searchParams.get("expand"), true),
     forceReload: url.searchParams.get("reload") === "true",
@@ -2796,8 +3044,23 @@ async function handleBgImage(request, env, ctx, config) {
   });
 }
 
+async function handleDailyImage(request, env, ctx, config) {
+  const security = await applyPublicSecurity(request, env, ctx, config);
+  if (security) return security;
+  const url = new URL(request.url);
+  const result = await getDailyImage(env, ctx, config, { orientation: url.searchParams.get("orientation") || "landscape", query: url.searchParams.get("query") || config.home?.dailyQuery });
+  if (!result.ok) return publicApiErrorResponse({ error: result.error || "daily_unavailable", attempts: result.attempts || [] }, result.status || 503, { "Access-Control-Allow-Origin": "*" });
+  const image = result.image;
+  if (url.searchParams.get("info") === "true" || wantsJson(request)) return publicJsonResponse({ ...image, ok: true, daily_date: result.date, daily_orientation: result.orientation });
+  return redirectResponse(image.url, "public, max-age=300", { "Access-Control-Allow-Origin": "*", "X-Image-Source": image.source || "daily", "X-Image-Title": encodeURIComponent(image.title || "Daily Image"), "X-Image-Author": encodeURIComponent(image.author || "Unknown") });
+}
+
 async function handleRandomImage(request, env, ctx, config) {
   const site = siteName(env);
+  const apiAuth = await authenticateApiKey(request, env);
+  if (!apiAuth.ok) return apiAuth.response;
+  const apiLimit = await applyApiKeyLimit(request, env, config, apiAuth.key);
+  if (apiLimit) return apiLimit;
   const security = await applyPublicSecurity(request, env, ctx, config);
   if (security) return security;
   const startMs = Date.now();
@@ -2811,6 +3074,7 @@ async function handleRandomImage(request, env, ctx, config) {
     minWidth: url.searchParams.get("min_width") || url.searchParams.get("minWidth") || "",
     minHeight: url.searchParams.get("min_height") || url.searchParams.get("minHeight") || "",
     aspectRatio: url.searchParams.get("aspect") || url.searchParams.get("aspect_ratio") || "",
+    quality: url.searchParams.get("quality") || "",
     expand: url.searchParams.has("expand") ? normalizeBooleanParam(url.searchParams.get("expand"), true) : undefined,
   }, preset);
   const hasExplicitQuery = (url.searchParams.has("query") && url.searchParams.get("query").trim() !== "") || !!preset?.params?.query;
@@ -2822,12 +3086,14 @@ async function handleRandomImage(request, env, ctx, config) {
     minWidth: normalizeDimension(rawParams.minWidth),
     minHeight: normalizeDimension(rawParams.minHeight),
     aspectRatio: normalizeAspectRatio(rawParams.aspectRatio),
+    quality: normalizeQuality(rawParams.quality || url.searchParams.get("quality"), config.quality?.default),
     safeMode: normalizeBooleanParam(url.searchParams.get("safe"), true),
     expand: rawParams.expand !== undefined ? rawParams.expand : true,
     wantInfo: url.searchParams.get("info") === "true",
     forceReload: url.searchParams.get("reload") === "true",
     hasExplicitQuery,
     preset: preset?.slug || "",
+    apiKeyId: apiAuth.key?.id || "",
   };
   const valid = validatePublicInput({ query: params.query, orientation: params.orientation, source: params.source, color: params.color, aspect: params.aspectRatio, preset: params.preset });
   if (!valid.ok) {
@@ -2859,7 +3125,7 @@ async function handleRandomImage(request, env, ctx, config) {
     return renderPublicErrorPage({ request, config, status: result.status || 503, code: errorType, title: errorType === "quota" ? "图片额度暂时用完" : "图源暂时不可用", message: errorType === "quota" ? "上游图片服务的调用额度可能已经耗尽，请稍后再试或切换其他图源。" : "当前图片源暂时没有返回可用图片，请稍后再试。", detail: result.error || "", actionText: "查看文档", actionHref: "/docs", site });
   }
   ctx.waitUntil(trackRequestAnalytics(env, request, params, result, startMs, ipHash, 200));
-  const image = { ...result.image, cache_hit: result.cacheHit, cache_key: result.cacheKey, translated: params.query !== params.originalQuery, translated_query: params.query, original_query: params.originalQuery, preset: params.preset || undefined, color: params.color || undefined, min_width: params.minWidth || undefined, min_height: params.minHeight || undefined, aspect_ratio: params.aspectRatio || undefined, expanded: params.expanded, expanded_query: params.expandedQuery, expansion_terms: params.expansionTerms };
+  const image = { ...result.image, cache_hit: result.cacheHit, cache_key: result.cacheKey, translated: params.query !== params.originalQuery, translated_query: params.query, original_query: params.originalQuery, preset: params.preset || undefined, color: params.color || undefined, min_width: params.minWidth || undefined, min_height: params.minHeight || undefined, aspect_ratio: params.aspectRatio || undefined, quality: params.quality, expanded: params.expanded, expanded_query: params.expandedQuery, expansion_terms: params.expansionTerms, api_key: apiAuth.key ? { id: apiAuth.key.id, name: apiAuth.key.name, prefix: apiAuth.key.prefix } : undefined };
   if (params.wantInfo) return publicJsonResponse(image);
   return redirectResponse(image.url, "public, max-age=5", {
     "Access-Control-Allow-Origin": "*",
@@ -2927,6 +3193,9 @@ async function handlePublicPage(request, env, config) {
   const url = new URL(request.url);
   if (url.pathname === "/") return renderHome(request, url, env, config);
   if (url.pathname === "/featured") return renderFeatured(request, url, env, config);
+  if (url.pathname === "/explore") return renderExplore(request, url, env, config);
+  if (url.pathname === "/daily") return renderDaily(request, url, env, config);
+  if (url.pathname.startsWith("/share/preset/")) return renderPresetShare(request, url, env, config, decodeURIComponent(url.pathname.split("/").pop() || ""));
   if (url.pathname === "/docs") return renderDocs(request, url, env, config);
   if (url.pathname === "/url-builder") return renderUrlBuilder(request, url, env, config);
   if (url.pathname === "/feedback") return renderFeedback(request, url, env, config);
@@ -2941,7 +3210,7 @@ function renderAdminLayout({ token, active, title, body, csrfToken, flash, favic
   const groups = [
     { label: lang === "en" ? "Overview" : "概览", items: [["dashboard", "dashboard"], ["analytics", "analytics"]] },
     { label: lang === "en" ? "Resources" : "资源", items: [["images", "images"], ["presets", "presets"], ["monitor", "monitor"]] },
-    { label: lang === "en" ? "Security" : "安全", items: [["security", "security"], ["moderation", "moderation"]] },
+    { label: lang === "en" ? "Security" : "安全", items: [["security", "security"], ["moderation", "moderation"], ["api-keys", "apiKeys"]] },
     { label: lang === "en" ? "Notifications" : "通知", items: [["notifications", "notifications"]] },
     { label: lang === "en" ? "System" : "系统", items: [["settings", "settings"], ["updates", "updates"], ["feedback-management", "feedback"]] },
     { label: lang === "en" ? "Account" : "账户", items: [["account", "account"]] },
@@ -3164,12 +3433,23 @@ async function renderNotifications(env, token, session, csrf, config, flash, req
   return renderAdminLayout({ token, active: "notifications", title: l("notifications"), body, csrfToken: csrf, flash, favicon: siteFaviconHref(env), site: siteName(env), lang, request });
 }
 
+async function renderApiKeys(env, token, session, csrf, config, flash, request, createdKey = "") {
+  const lang = getLang(request);
+  const en = lang === "en";
+  const keys = await listApiKeys(env);
+  const rows = keys.map(k => `<tr><td><strong>${escapeHtml(k.name || "API Key")}</strong><br><code>${escapeHtml(k.key_prefix || "ow_")}••••</code></td><td>${escapeHtml(k.status || "active")}</td><td>${escapeHtml(k.minute_limit || DEFAULT_API_KEY_LIMITS.minute)}/${escapeHtml(k.hour_limit || DEFAULT_API_KEY_LIMITS.hour)}/${escapeHtml(k.day_limit || DEFAULT_API_KEY_LIMITS.day)}</td><td>${escapeHtml(k.last_used_at || "-")}</td><td><form method="POST" action="/${escapeAttr(token)}/api/api-keys/toggle${en ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><input type="hidden" name="id" value="${escapeAttr(k.id)}"><input type="hidden" name="status" value="${k.status === "active" ? "disabled" : "active"}"><button class="${k.status === "active" ? "warn" : ""}" style="padding:7px 12px;font-size:12px">${k.status === "active" ? (en ? "Disable" : "禁用") : (en ? "Enable" : "启用")}</button></form></td><td><form method="POST" action="/${escapeAttr(token)}/api/api-keys/delete${en ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><input type="hidden" name="id" value="${escapeAttr(k.id)}"><button class="danger" style="padding:7px 12px;font-size:12px">${en ? "Delete" : "删除"}</button></form></td></tr>`).join("");
+  const createdBox = createdKey ? `<div class="flash"><strong>${en ? "Copy this API key now:" : "请立即复制这个 API Key："}</strong><br><code style="word-break:break-all">${escapeHtml(createdKey)}</code><p style="margin:8px 0 0">${en ? "It is only shown once and is not stored in plaintext." : "它只显示一次，系统不会保存明文。"}</p></div>` : "";
+  const body = `${createdBox}<form class="card" method="POST" action="/${escapeAttr(token)}/api/api-keys/create${en ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><h2>${en ? "Create API Key" : "创建 API Key"}</h2><label>${en ? "Name" : "名称"}</label><input name="name" placeholder="blog / client"><div class="grid"><div><label>${en ? "Per minute" : "每分钟"}</label><input name="minute" type="number" value="${DEFAULT_API_KEY_LIMITS.minute}"></div><div><label>${en ? "Per hour" : "每小时"}</label><input name="hour" type="number" value="${DEFAULT_API_KEY_LIMITS.hour}"></div><div><label>${en ? "Per day" : "每天"}</label><input name="day" type="number" value="${DEFAULT_API_KEY_LIMITS.day}"></div></div><button>${en ? "Create" : "创建"}</button><p class="muted">${en ? "Use Authorization: Bearer ow_xxx or X-API-Key. Plaintext keys are only shown once." : "支持 Authorization: Bearer ow_xxx 或 X-API-Key。明文 Key 只显示一次。"}</p></form><div class="card"><h2>${en ? "Keys" : "Key 列表"}</h2><table><tr><th>${en ? "Name" : "名称"}</th><th>${en ? "Status" : "状态"}</th><th>${en ? "Limits m/h/d" : "限额 分/时/天"}</th><th>${en ? "Last used" : "最近使用"}</th><th>${en ? "Toggle" : "启停"}</th><th>${en ? "Delete" : "删除"}</th></tr>${rows || `<tr><td colspan="6" class="muted">${en ? "No keys yet" : "暂无 Key"}</td></tr>`}</table></div>`;
+  return renderAdminLayout({ token, active: "api-keys", title: en ? "API Keys" : "API Key 管理", body, csrfToken: csrf, flash, favicon: siteFaviconHref(env), site: siteName(env), lang, request });
+}
+
 async function renderSettings(env, token, session, csrf, config, flash, request) {
   const lang = getLang(request);
   const l = (k) => _(k, lang);
   const typeOpt = v => config.bannerType === v ? "selected" : "";
   const bannerText = Array.isArray(config.bannerContent) ? config.bannerContent.join(" ||| ") : (config.bannerContent || "");
-  const body = `<form class="card" method="POST" action="/${escapeAttr(token)}/api/settings${lang === "en" ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><h2>${lang === "en" ? "Site Notice" : "站点通知"}</h2><p class="muted" style="font-size:13px;margin:0 0 12px">${lang === "en" ? "Displayed as a slim notice bar on public pages. Use ||| to separate carousel messages." : "显示在用户页面顶部的细长通知条。用 ||| 分隔多条消息可轮播。"}</p><label>${l("bannerMarkdown")}</label><textarea name="bannerContent" rows="6" placeholder="${lang === "en" ? "Use ||| to separate multiple messages for carousel" : "用 ||| 分隔多条消息，实现轮播效果"}">${escapeHtml(bannerText)}</textarea><label>${l("bannerMode")}</label><select name="bannerType"><option value="fixed" ${typeOpt("fixed")}>${l("fixed")}</option><option value="dismissible" ${typeOpt("dismissible")}>${l("dismissible")}</option><option value="toast" ${typeOpt("toast")}>${l("toast")}</option></select><button>${l("save")}</button></form><form class="card" method="POST" action="/${escapeAttr(token)}/api/logs/clear${lang === "en" ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><h2>${lang === "en" ? "System Maintenance" : "系统维护"}</h2><p class="muted" style="margin-bottom:16px">${lang === "en" ? "Clear all error logs stored in D1. Image cache settings are now in Images / Cache; security options are in Security." : "清空 D1 中存储的错误日志。图片缓存设置已移到“图片管理”，安全相关设置已移到“安全设置”。"}</p><button class="danger">${l("clearLogs")}</button></form>`;
+  const home = normalizeHomeConfig(config.home || DEFAULT_HOME_CONFIG);
+  const body = `<form class="card" method="POST" action="/${escapeAttr(token)}/api/home-settings${lang === "en" ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><h2>${lang === "en" ? "Homepage Content" : "首页内容"}</h2><p class="muted" style="font-size:13px;margin:0 0 12px">${lang === "en" ? "Customize the public homepage without editing source code. Separate rotating titles by line or |||." : "无需改源码即可自定义首页。轮播标题可按行或用 ||| 分隔。"}</p><div class="grid"><div><label>中文标题轮播</label><textarea name="titlesZh" rows="4">${escapeHtml(home.titlesZh.join("\n"))}</textarea></div><div><label>English rotating titles</label><textarea name="titlesEn" rows="4">${escapeHtml(home.titlesEn.join("\n"))}</textarea></div></div><label>中文副标题</label><input name="heroZh" value="${escapeAttr(home.heroZh)}"><label>English subtitle</label><input name="heroEn" value="${escapeAttr(home.heroEn)}"><div class="grid"><div><label>中文随机按钮</label><input name="randomZh" value="${escapeAttr(home.randomZh)}"></div><div><label>English random button</label><input name="randomEn" value="${escapeAttr(home.randomEn)}"></div><div><label>中文生成器按钮</label><input name="builderZh" value="${escapeAttr(home.builderZh)}"></div><div><label>English builder button</label><input name="builderEn" value="${escapeAttr(home.builderEn)}"></div></div><div class="grid"><div><label>${lang === "en" ? "Homepage background keyword" : "首页背景关键词"}</label><input name="backgroundQuery" value="${escapeAttr(home.backgroundQuery)}"></div><div><label>${lang === "en" ? "Daily pick keyword" : "每日精选关键词"}</label><input name="dailyQuery" value="${escapeAttr(home.dailyQuery)}"></div></div><button>${l("save")}</button></form><form class="card" method="POST" action="/${escapeAttr(token)}/api/settings${lang === "en" ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><h2>${lang === "en" ? "Site Notice" : "站点通知"}</h2><p class="muted" style="font-size:13px;margin:0 0 12px">${lang === "en" ? "Displayed as a slim notice bar on public pages. Use ||| to separate carousel messages." : "显示在用户页面顶部的细长通知条。用 ||| 分隔多条消息可轮播。"}</p><label>${l("bannerMarkdown")}</label><textarea name="bannerContent" rows="6" placeholder="${lang === "en" ? "Use ||| to separate multiple messages for carousel" : "用 ||| 分隔多条消息，实现轮播效果"}">${escapeHtml(bannerText)}</textarea><label>${l("bannerMode")}</label><select name="bannerType"><option value="fixed" ${typeOpt("fixed")}>${l("fixed")}</option><option value="dismissible" ${typeOpt("dismissible")}>${l("dismissible")}</option><option value="toast" ${typeOpt("toast")}>${l("toast")}</option></select><button>${l("save")}</button></form><form class="card" method="POST" action="/${escapeAttr(token)}/api/logs/clear${lang === "en" ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><h2>${lang === "en" ? "System Maintenance" : "系统维护"}</h2><p class="muted" style="margin-bottom:16px">${lang === "en" ? "Clear all error logs stored in D1. Image cache settings are now in Images / Cache; security options are in Security." : "清空 D1 中存储的错误日志。图片缓存设置已移到“图片管理”，安全相关设置已移到“安全设置”。"}</p><button class="danger">${l("clearLogs")}</button></form>`;
   return renderAdminLayout({ token, active: "settings", title: l("settings"), body, csrfToken: csrf, flash, favicon: siteFaviconHref(env), site: siteName(env), lang, request });
 }
 
@@ -3240,7 +3520,7 @@ async function renderMonitor(env, token, session, csrf, config, flash, request) 
   const orderValue = (routing.priority || DEFAULT_SOURCE_ROUTING.priority).join(",");
   const checked = v => v ? "checked" : "";
   const body = `<div class="card"><h2>${l("monitor")}</h2><p class="muted" style="font-size:13px;margin:0 0 16px">${en ? "Each image source is pinged every 5 minutes (via Cron) and on first view. Random routing can use these health samples to prefer faster healthy sources." : "每个图源每 5 分钟由 Cron 检测一次（首次访问也会触发）。混合随机路由可根据这些健康采样优先选择更快、更健康的图源。"}</p><form method="POST" action="/${escapeAttr(token)}/api/monitor/ping${en ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><button>${en ? "Ping Now" : "立即检测"}</button></form></div>
-<form class="card" method="POST" action="/${escapeAttr(token)}/api/monitor/routing${en ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><h2>${en ? "Health-aware routing" : "健康路由"}</h2><p class="muted" style="font-size:13px;margin:0 0 12px">${en ? "Set source priority for source=random. Use comma-separated source names." : "设置 source=random 时的图源优先级。用英文逗号分隔图源名称。"}</p><label>${en ? "Priority" : "优先级"}</label><input name="priority" value="${escapeAttr(orderValue)}" placeholder="unsplash,pexels,pixabay,bing"><label style="display:flex;align-items:center;gap:10px;cursor:pointer"><input type="checkbox" name="healthAware" style="width:auto;margin:0" ${checked(routing.healthAware !== false)}> ${en ? "Prefer healthy / low-latency sources" : "优先健康、低延迟图源"}</label><label style="display:flex;align-items:center;gap:10px;cursor:pointer"><input type="checkbox" name="skipUnhealthy" style="width:auto;margin:0" ${checked(routing.skipUnhealthy)}> ${en ? "Skip currently unhealthy sources when possible" : "尽量跳过当前异常图源"}</label><button>${l("save")}</button></form>
+<form class="card" method="POST" action="/${escapeAttr(token)}/api/monitor/routing${en ? "?lang=en" : ""}"><input type="hidden" name="csrf" value="${escapeAttr(csrf)}"><h2>${en ? "Health-aware routing" : "健康路由"}</h2><p class="muted" style="font-size:13px;margin:0 0 12px">${en ? "Set source priority for source=random. Use comma-separated source names." : "设置 source=random 时的图源优先级。用英文逗号分隔图源名称。"}</p><label>${en ? "Priority" : "优先级"}</label><input name="priority" value="${escapeAttr(orderValue)}" placeholder="unsplash,pexels,pixabay,bing"><label style="display:flex;align-items:center;gap:10px;cursor:pointer"><input type="checkbox" name="healthAware" style="width:auto;margin:0" ${checked(routing.healthAware !== false)}> ${en ? "Prefer healthy / low-latency sources" : "优先健康、低延迟图源"}</label><label style="display:flex;align-items:center;gap:10px;cursor:pointer"><input type="checkbox" name="skipUnhealthy" style="width:auto;margin:0" ${checked(routing.skipUnhealthy)}> ${en ? "Skip currently unhealthy sources when possible" : "尽量跳过当前异常图源"}</label><label style="display:flex;align-items:center;gap:10px;cursor:pointer"><input type="checkbox" name="quotaAware" style="width:auto;margin:0" ${checked(routing.quotaAware !== false)}> ${en ? "Prefer sources with more quota remaining" : "优先剩余额度更多的图源"}</label><label>${en ? "Failure cooldown seconds" : "失败冷却秒数"}</label><input name="failureCooldownSeconds" type="number" value="${escapeAttr(routing.failureCooldownSeconds || DEFAULT_SOURCE_ROUTING.failureCooldownSeconds)}"><button>${l("save")}</button></form>
 <div class="card">${monitorWidget("adminMonitor", lang)}</div>`;
   return renderAdminLayout({ token, active: "monitor", title: l("monitor"), body, csrfToken: csrf, flash, favicon: siteFaviconHref(env), site: siteName(env), lang, request });
 }
@@ -3253,7 +3533,19 @@ async function handleAdminApi(request, env, ctx, token, session) {
   const path = new URL(request.url).pathname;
   let msg = "操作成功";
   invalidateRuntimeConfigCache();
-  if (path.endsWith("/api/settings")) {
+  if (path.endsWith("/api/home-settings")) {
+    const homeConfig = normalizeHomeConfig({
+      titlesZh: splitLines(form.get("titlesZh"), DEFAULT_HOME_CONFIG.titlesZh, 6),
+      titlesEn: splitLines(form.get("titlesEn"), DEFAULT_HOME_CONFIG.titlesEn, 6),
+      heroZh: form.get("heroZh"), heroEn: form.get("heroEn"),
+      randomZh: form.get("randomZh"), randomEn: form.get("randomEn"),
+      builderZh: form.get("builderZh"), builderEn: form.get("builderEn"),
+      docsZh: DEFAULT_HOME_CONFIG.docsZh, docsEn: DEFAULT_HOME_CONFIG.docsEn,
+      backgroundQuery: form.get("backgroundQuery"), dailyQuery: form.get("dailyQuery"),
+    });
+    await d1SetConfig(env, KV.CONFIG_HOME, JSON.stringify(homeConfig));
+    msg = "首页内容已保存";
+  } else if (path.endsWith("/api/settings")) {
     const banner = String(form.get("bannerContent") || "").slice(0, 2000);
     const bannerCheck = detectDangerousInput(banner);
     if (!bannerCheck.ok) return redirectResponse(`/${token}/settings?msg=${encodeURIComponent("公告内容包含不安全输入，请修改后再保存")}`, "no-store");
@@ -3297,7 +3589,7 @@ async function handleAdminApi(request, env, ctx, token, session) {
     msg = "已在后台触发图源检测，稍候刷新查看";
   } else if (path.endsWith("/api/monitor/routing")) {
     const priority = String(form.get("priority") || "").split(",").map(s => s.trim().toLowerCase()).filter(s => SOURCES.includes(s));
-    const routingConfig = { priority: priority.length ? priority : DEFAULT_SOURCE_ROUTING.priority, healthAware: form.get("healthAware") === "on", skipUnhealthy: form.get("skipUnhealthy") === "on" };
+    const routingConfig = { priority: priority.length ? priority : DEFAULT_SOURCE_ROUTING.priority, healthAware: form.get("healthAware") === "on", skipUnhealthy: form.get("skipUnhealthy") === "on", quotaAware: form.get("quotaAware") === "on", failureCooldownSeconds: Math.max(60, parseInt(form.get("failureCooldownSeconds"), 10) || DEFAULT_SOURCE_ROUTING.failureCooldownSeconds) };
     await d1SetConfig(env, KV.CONFIG_SOURCE_ROUTING, JSON.stringify(routingConfig));
     msg = "图源路由策略已保存";
   } else if (path.endsWith("/api/presets/add")) {
@@ -3311,6 +3603,16 @@ async function handleAdminApi(request, env, ctx, token, session) {
     const slug = normalizeSlug(form.get("slug"));
     if (slug && !BUILTIN_PRESETS.some(p => p.slug === slug)) await env.DB.prepare("DELETE FROM presets WHERE slug = ?").bind(slug).run();
     msg = "预设已删除";
+  } else if (path.endsWith("/api/api-keys/create")) {
+    const key = await createApiKey(env, form.get("name"), { minute: Math.max(1, parseInt(form.get("minute"), 10) || DEFAULT_API_KEY_LIMITS.minute), hour: Math.max(1, parseInt(form.get("hour"), 10) || DEFAULT_API_KEY_LIMITS.hour), day: Math.max(1, parseInt(form.get("day"), 10) || DEFAULT_API_KEY_LIMITS.day) });
+    return renderApiKeys(env, token, session, csrf, config, "", request, key);
+  } else if (path.endsWith("/api/api-keys/toggle")) {
+    const status = String(form.get("status") || "disabled") === "active" ? "active" : "disabled";
+    await env.DB.prepare("UPDATE api_keys SET status = ?, updated_at = datetime('now') WHERE id = ?").bind(status, parseInt(form.get("id"), 10)).run();
+    msg = "API Key 已更新";
+  } else if (path.endsWith("/api/api-keys/delete")) {
+    await env.DB.prepare("DELETE FROM api_keys WHERE id = ?").bind(parseInt(form.get("id"), 10)).run();
+    msg = "API Key 已删除";
   } else if (path.endsWith("/api/security/rate-limits")) {
     const rl = {
       minute: Math.max(1, parseInt(form.get("minute"), 10) || DEFAULT_RATE_LIMITS.minute),
@@ -3406,6 +3708,8 @@ async function handleAdminApi(request, env, ctx, token, session) {
   }
   // Precise API path → admin page redirect mapping (avoids false matches from includes()).
   const redirectMap = [
+    [/\/api\/api-keys\//, "api-keys"],
+    [/\/api\/home-settings/, "settings"],
     [/\/api\/monitor\//, "monitor"],
     [/\/api\/presets\//, "presets"],
     [/\/api\/security\/keywords\/|\/api\/moderation\//, "moderation"],
@@ -3428,7 +3732,7 @@ async function handleAdminRoute(request, env, ctx, config) {
   const [token, page] = parts;
   if (page === "login" && request.method === "GET") return renderLogin(request, env, ctx, token, "", config);
   if (page === "auth" && request.method === "POST") return handleAuth(request, env, ctx, token, config);
-  if (page !== "api" && !["dashboard", "analytics", "images", "presets", "security", "moderation", "notifications", "settings", "updates", "account", "monitor", "feedback", "feedback-management"].includes(page)) return null;
+  if (page !== "api" && !["dashboard", "analytics", "images", "presets", "security", "moderation", "api-keys", "notifications", "settings", "updates", "account", "monitor", "feedback", "feedback-management"].includes(page)) return null;
   const auth = await requireAdmin(request, env, ctx, token);
   if (auth.status === 403) return renderAdminErrorPage({ request, token, status: 403, title: "后台入口已过期", message: "这个管理入口已经过期或无效。", detail: "请通过 Telegram Bot 发送 /admin 命令获取今日有效入口。", actionText: "返回首页", actionHref: "/", site });
   if (!auth.ok) return redirectResponse(`/${token}/login`, "no-store");
@@ -3441,6 +3745,7 @@ async function handleAdminRoute(request, env, ctx, config) {
   if (page === "presets") return renderPresets(env, token, auth.session, csrf, config, flash, request);
   if (page === "security") return renderSecurity(env, token, auth.session, csrf, config, flash, request);
   if (page === "moderation") return renderModeration(env, token, auth.session, csrf, config, flash, request);
+  if (page === "api-keys") return renderApiKeys(env, token, auth.session, csrf, config, flash, request);
   if (page === "notifications") return renderNotifications(env, token, auth.session, csrf, config, flash, request);
   if (page === "settings") return renderSettings(env, token, auth.session, csrf, config, flash, request);
   if (page === "updates") return renderUpdates(env, token, auth.session, csrf, config, flash, request);
@@ -3452,7 +3757,7 @@ async function handleAdminRoute(request, env, ctx, config) {
 }
 
 function handleOptions() {
-  return new Response(null, { headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,OPTIONS", "Access-Control-Allow-Headers": "content-type" } });
+  return new Response(null, { headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,OPTIONS", "Access-Control-Allow-Headers": "content-type, authorization, x-api-key" } });
 }
 
 async function buildBotCommandReply(text, request, env, ctx) {
@@ -3467,6 +3772,26 @@ async function buildBotCommandReply(text, request, env, ctx) {
     const rows = await getQuotaRows(env.DB, env);
     return "📊 API 配额\n" + rows.map(q => `${q.source}: ${q.used ?? "-"}/${q.limit ?? "-"} (${q.remaining ?? "-"} 剩余)`).join("\n");
   }
+  if (cmd === "/daily") {
+    const origin = getPublicOrigin(request, env);
+    const parts = String(text || "").trim().split(/\s+/);
+    const orientation = normalizeOrientation(parts[1] || "landscape");
+    const result = await getDailyImage(env, ctx, await loadRuntimeConfig(env.DB, env), { orientation });
+    if (!result.ok) return `❌ 每日精选暂不可用：${result.error || "unknown"}`;
+    const img = result.image || {};
+    return `🌅 每日精选 ${result.date}\n${img.title || "Daily Image"}\n${img.author ? "作者：" + img.author + "\n" : ""}${origin}/api/daily?orientation=${encodeURIComponent(result.orientation)}\n原图：${img.url}`;
+  }
+  if (cmd === "/random") {
+    const origin = getPublicOrigin(request, env);
+    const query = String(text || "").trim().split(/\s+/).slice(1).join(" ").trim() || "wallpaper";
+    const cfg = await loadRuntimeConfig(env.DB, env);
+    const params = { query: normalizeQuery(query), orientation: "landscape", source: "random", color: "", minWidth: 0, minHeight: 0, aspectRatio: "", safeMode: true, expand: true, forceReload: false, hasExplicitQuery: true, quality: "high" };
+    const result = await fetchWithFallback(params, env, ctx, cfg);
+    if (!result.ok) return `❌ 随机图片暂不可用：${result.error || "unknown"}`;
+    const img = result.image || {};
+    const api = `${origin}/api/random?query=${encodeURIComponent(query)}&quality=high`;
+    return `🎲 随机图片\n关键词：${query}\n${img.title || "Image"}\n${img.author ? "作者：" + img.author + "\n" : ""}${api}\n原图：${img.url}`;
+  }
   if (cmd === "/reset") {
     const totpState = await getTotpState(env.DB, env.ADMIN_PASSWORD, env);
     if (!totpState.enabled) return "❌ TOTP 未启用，无法通过 Bot 重置入口。请直接登录后台操作。";
@@ -3479,7 +3804,13 @@ async function buildBotCommandReply(text, request, env, ctx) {
     return `✅ 管理入口已重置\n🔑 新入口：${buildAdminUrl(origin, newPath)}\n有效期至 ${tomorrowCstDateText()} 00:00 CST`;
   }
   if (cmd === "/help" || cmd === "/start") {
-    return `🤖 ${site} Bot 命令\n/admin — 今日管理入口\n/status — API 配额状态\n/reset 123456 — 重置入口（需 TOTP 验证码）\n/help — 显示此帮助`;
+    return `🤖 ${site} Bot 命令
+/admin — 今日管理入口
+/status — API 配额状态
+/daily [landscape|portrait|squarish] — 每日精选
+/random 关键词 — 返回随机图片
+/reset 123456 — 重置入口（需 TOTP 验证码）
+/help — 显示此帮助`;
   }
   return "";
 }
@@ -3522,6 +3853,7 @@ async function handleRequest(request, env, ctx) {
   if (request.method === "OPTIONS") return handleOptions();
   if (url.pathname === "/api/telegram-webhook" && request.method === "POST") return handleTelegramWebhook(request, env, ctx);
   if (request.method === "GET" && (url.pathname === "/api/random" || url.pathname === "/random" || (url.pathname === "/" && url.searchParams.has("query")))) return handleRandomImage(request, env, ctx, config);
+  if (request.method === "GET" && url.pathname === "/api/daily") return handleDailyImage(request, env, ctx, config);
   if (request.method === "GET" && url.pathname === "/api/bg") return handleBgImage(request, env, ctx, config);
   if (url.pathname === "/api/check-content" && request.method === "POST") return handleContentCheck(request, env, ctx, config);
   if (url.pathname === "/api/feedback" && request.method === "POST") return handleFeedbackSubmit(request, env, ctx, config);
@@ -3576,7 +3908,11 @@ async function ensureD1(env) {
     try { await env.DB.prepare("ALTER TABLE rate_limits ADD COLUMN updated_at TEXT").run(); } catch (_) {}
     try { await env.DB.prepare("UPDATE rate_limits SET updated_at = datetime('now') WHERE updated_at IS NULL").run(); } catch (_) {}
     try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS presets (slug TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '', params_json TEXT NOT NULL, is_public INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))").run(); } catch (_) {}
-    try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS request_analytics (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT DEFAULT (datetime('now')), path TEXT, source TEXT, query TEXT, orientation TEXT, color TEXT, aspect_ratio TEXT, cache_hit INTEGER DEFAULT 0, ok INTEGER DEFAULT 1, status INTEGER DEFAULT 200, latency INTEGER DEFAULT 0, ip_hash TEXT)").run(); } catch (_) {}
+    try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS request_analytics (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT DEFAULT (datetime('now')), path TEXT, source TEXT, query TEXT, orientation TEXT, color TEXT, aspect_ratio TEXT, cache_hit INTEGER DEFAULT 0, ok INTEGER DEFAULT 1, status INTEGER DEFAULT 200, latency INTEGER DEFAULT 0, ip_hash TEXT, api_key_id TEXT DEFAULT '')").run(); } catch (_) {}
+    try { await env.DB.prepare("ALTER TABLE request_analytics ADD COLUMN api_key_id TEXT DEFAULT ''").run(); } catch (_) {}
+    try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS api_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, key_hash TEXT UNIQUE NOT NULL, key_prefix TEXT, status TEXT DEFAULT 'active', minute_limit INTEGER DEFAULT 60, hour_limit INTEGER DEFAULT 1000, day_limit INTEGER DEFAULT 10000, last_used_at TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))").run(); } catch (_) {}
+    try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS daily_images (date TEXT NOT NULL, orientation TEXT NOT NULL, payload TEXT NOT NULL, source TEXT, image_id TEXT, created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY(date, orientation))").run(); } catch (_) {}
+    try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS source_failures (source TEXT PRIMARY KEY, fail_count INTEGER DEFAULT 0, last_error TEXT, disabled_until TEXT, updated_at TEXT DEFAULT (datetime('now')))").run(); } catch (_) {}
     try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_request_analytics_ts ON request_analytics(ts)").run(); } catch (_) {}
     try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_request_analytics_source ON request_analytics(source, ts)").run(); } catch (_) {}
     // Garbage collection (D1 has no auto-TTL like KV).
@@ -3584,6 +3920,8 @@ async function ensureD1(env) {
     try { await env.DB.prepare("DELETE FROM source_health WHERE checked_at < datetime('now','-24 hours')").run(); } catch (_) {}
     try { await env.DB.prepare("DELETE FROM rate_limits WHERE updated_at < datetime('now','-7 days')").run(); } catch (_) {}
     try { await env.DB.prepare("DELETE FROM request_analytics WHERE ts < datetime('now','-90 days')").run(); } catch (_) {}
+    try { await env.DB.prepare("DELETE FROM daily_images WHERE date < date('now','-30 days')").run(); } catch (_) {}
+    try { await env.DB.prepare("DELETE FROM source_failures WHERE disabled_until IS NOT NULL AND julianday(disabled_until) <= julianday('now')").run(); } catch (_) {}
     try { await env.DB.prepare("DELETE FROM config WHERE key LIKE 'trans:%' AND updated_at < datetime('now','-30 days')").run(); } catch (_) {}
     try { await env.DB.prepare("DELETE FROM config WHERE key LIKE 'violations:%' AND updated_at < datetime('now','-30 days')").run(); } catch (_) {}
     try { await env.DB.prepare("DELETE FROM admin_config WHERE key = 'totp_setup_secret' AND updated_at < datetime('now','-30 minutes')").run(); } catch (_) {}
@@ -3710,7 +4048,40 @@ CREATE TABLE IF NOT EXISTS request_analytics (
   ok INTEGER DEFAULT 1,
   status INTEGER DEFAULT 200,
   latency INTEGER DEFAULT 0,
-  ip_hash TEXT
+  ip_hash TEXT,
+  api_key_id TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  key_hash TEXT UNIQUE NOT NULL,
+  key_prefix TEXT,
+  status TEXT DEFAULT 'active',
+  minute_limit INTEGER DEFAULT 60,
+  hour_limit INTEGER DEFAULT 1000,
+  day_limit INTEGER DEFAULT 10000,
+  last_used_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS daily_images (
+  date TEXT NOT NULL,
+  orientation TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  source TEXT,
+  image_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY(date, orientation)
+);
+
+CREATE TABLE IF NOT EXISTS source_failures (
+  source TEXT PRIMARY KEY,
+  fail_count INTEGER DEFAULT 0,
+  last_error TEXT,
+  disabled_until TEXT,
+  updated_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS feedback (
@@ -3734,6 +4105,8 @@ CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_source_health ON source_health (source, checked_at);
 CREATE INDEX IF NOT EXISTS idx_request_analytics_ts ON request_analytics(ts);
 CREATE INDEX IF NOT EXISTS idx_request_analytics_source ON request_analytics(source, ts);
+CREATE INDEX IF NOT EXISTS idx_request_analytics_api_key ON request_analytics(api_key_id, ts);
+CREATE INDEX IF NOT EXISTS idx_daily_images_date ON daily_images(date DESC);
 `;
 
 async function handleD1Init(request, env) {
