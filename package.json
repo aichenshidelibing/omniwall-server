@@ -1,0 +1,28 @@
+{
+  "name": "omniwall-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OmniWall Node.js + SQLite server wrapper for the Cloudflare Worker version.",
+  "scripts": {
+    "sync:worker": "node scripts/sync-worker-source.mjs",
+    "predev": "npm run sync:worker",
+    "dev": "node --watch src/server.js",
+    "prestart": "npm run sync:worker",
+    "start": "node src/server.js",
+    "pretest": "npm run sync:worker",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "supertest": "^7.0.0",
+    "vitest": "^2.1.8"
+  }
+}
