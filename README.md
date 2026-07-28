@@ -259,8 +259,6 @@ http://服务器IP:3000/docs
 http://服务器IP:3000/{ADMIN_USERNAME}/login
 ```
 
-Docker 容器启动时会修复 `/app/data` bind mount 权限，再切换到 `node` 用户运行应用。
-
 完整教程见 [`docs/SERVER_DEPLOY.md`](docs/SERVER_DEPLOY.md)。
 
 ---

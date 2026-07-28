@@ -48,8 +48,6 @@ SITE_NAME=OmniWall
 
 `ADMIN_PASSWORD` 同时用于后台登录和加密密钥派生。上线后不要随意更换，否则旧的加密缓存、通知配置或反馈内容可能无法解密。
 
-Docker Compose 会把主机 `./data` 挂载到容器 `/app/data`。容器启动入口会先修复 `/app/data` 的 bind mount 所有权，再切换到 `node` 用户运行应用，因此通常不需要手动处理 SQLite 数据目录权限。
-
 ## 3. 一键启动
 
 ```bash
