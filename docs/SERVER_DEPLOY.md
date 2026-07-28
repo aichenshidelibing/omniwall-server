@@ -6,7 +6,7 @@
 
 ```txt
 浏览器 / API 客户端
-  -> Nginx / Caddy / 面板反代，可选
+  -> HTTPS 反向代理：Nginx / Caddy / 面板反代（生产必需）
   -> Docker 容器：Node.js + Express
   -> SQLite 数据库：./data/omniwall.sqlite
 ```
@@ -19,6 +19,7 @@
 
 - Docker
 - Docker Compose v2
+- 一个已配置 TLS 证书的域名或 HTTPS 反向代理
 
 检查命令：
 
@@ -48,6 +49,15 @@ SITE_NAME=OmniWall
 
 `ADMIN_PASSWORD` 同时用于后台登录和加密密钥派生。上线后不要随意更换，否则旧的加密缓存、通知配置或反馈内容可能无法解密。
 
+安全默认值：
+
+```bash
+TRUST_PROXY=false
+MAX_REQUEST_BODY_BYTES=1048576
+```
+
+只有当 OmniWall 位于你控制的可信反向代理后面，并且外部用户不能直接访问容器端口时，才设置 `TRUST_PROXY=true`。启用后服务会信任反代传入的 `X-Forwarded-*` 头用于协议/IP 判断。
+
 ## 3. 一键启动
 
 ```bash
@@ -60,18 +70,25 @@ docker compose up -d --build
 docker compose logs -f omniwall
 ```
 
-访问：
+本地或局域网 smoke/demo 可以直接访问：
 
 ```txt
 http://服务器IP:3000/
 http://服务器IP:3000/docs
-http://服务器IP:3000/admin/login
+```
+
+生产环境的后台登录和 `/api/bg` 背景 Cookie 功能需要 HTTPS，因为 Worker 兼容逻辑设置的是 `Secure` Cookie。请把 TLS 放在 OmniWall 前面，然后访问：
+
+```txt
+https://你的域名/
+https://你的域名/docs
+https://你的域名/admin/login
 ```
 
 如果 `ADMIN_USERNAME` 不是 `admin`，首次后台入口是：
 
 ```txt
-http://服务器IP:3000/{ADMIN_USERNAME}/login
+https://你的域名/{ADMIN_USERNAME}/login
 ```
 
 首次登录后，系统会生成每日随机后台路径，后续请使用新的后台路径。
@@ -81,37 +98,65 @@ http://服务器IP:3000/{ADMIN_USERNAME}/login
 首次访问页面时会自动初始化 SQLite 表。也可以手动初始化：
 
 ```bash
-curl -H "Authorization: Bearer 你的ADMIN_PASSWORD" http://服务器IP:3000/api/d1/init
+curl -H "Authorization: Bearer 你的ADMIN_PASSWORD" https://你的域名/api/d1/init
+```
+
+本地 smoke/demo 可使用：
+
+```bash
+curl -H "Authorization: Bearer 你的ADMIN_PASSWORD" http://127.0.0.1:3000/api/d1/init
 ```
 
 返回包含 `"ok": true` 即成功。
 
-## 5. 反向代理建议
+## 5. HTTPS 反向代理建议
 
-Nginx 示例：
+推荐只让反向代理暴露到公网，容器端口 `3000` 只监听本机或内网。若使用 Docker Compose 默认的 `3000:3000` 公网映射，请保持 `TRUST_PROXY=false`，不要信任直连客户端伪造的 `X-Forwarded-*` 头。
+
+### Nginx HTTPS 示例
 
 ```nginx
 server {
     listen 80;
     server_name example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name example.com;
+
+    ssl_certificate /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto https;
     }
 }
 ```
 
-Caddy 示例：
+确认 3000 端口只允许反代访问后，可在 `.env` 中启用：
+
+```bash
+TRUST_PROXY=true
+```
+
+### Caddy HTTPS 示例
 
 ```caddyfile
 example.com {
-    reverse_proxy 127.0.0.1:3000
+    reverse_proxy 127.0.0.1:3000 {
+        header_up X-Forwarded-Proto https
+    }
 }
 ```
+
+Caddy 会自动申请和续期 HTTPS 证书。同样建议确认直连 3000 端口不对公网开放后再设置 `TRUST_PROXY=true`。
 
 ## 6. 数据备份
 
@@ -165,9 +210,13 @@ grep ADMIN_PASSWORD .env
 docker compose restart omniwall
 ```
 
+### 后台登录后仍未保持登录，或首页背景接口提示缺少 Cookie
+
+生产后台会设置 `Secure` Cookie，浏览器只会在 HTTPS 下保存和发送。请使用 `https://你的域名/{ADMIN_USERNAME}/login`，不要用公网明文 HTTP 做生产后台登录。
+
 ### 获取真实客户端 IP
 
-如果部署在反向代理后面，保持：
+如果部署在可信反向代理后面，并且直连端口没有暴露给公网，可以设置：
 
 ```bash
 TRUST_PROXY=true
@@ -179,3 +228,5 @@ TRUST_PROXY=true
 X-Forwarded-For
 X-Forwarded-Proto
 ```
+
+如果是直接暴露 `3000:3000`，请保持 `TRUST_PROXY=false`。

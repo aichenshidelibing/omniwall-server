@@ -251,12 +251,12 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-默认访问：
+本地或局域网 smoke/demo 可直接访问 `http://服务器IP:3000/`。生产环境请先放到 HTTPS 反向代理后面，再访问后台和依赖后台 Cookie 的背景接口：
 
 ```txt
-http://服务器IP:3000/
-http://服务器IP:3000/docs
-http://服务器IP:3000/{ADMIN_USERNAME}/login
+https://你的域名/
+https://你的域名/docs
+https://你的域名/{ADMIN_USERNAME}/login
 ```
 
 完整教程见 [`docs/SERVER_DEPLOY.md`](docs/SERVER_DEPLOY.md)。

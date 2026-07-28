@@ -50,6 +50,7 @@ class D1SQLiteDatabase {
     this.sqlite = new Database(resolved);
     this.sqlite.pragma('journal_mode = WAL');
     this.sqlite.pragma('foreign_keys = ON');
+    this.sqlite.pragma('busy_timeout = 5000');
   }
 
   prepare(sql) {

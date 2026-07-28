@@ -1,6 +1,6 @@
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
-import { nodeRequestToWebRequest, sendWebResponse } from '../src/runtime/http-bridge.js';
+import { nodeRequestToWebRequest, RequestBodyTooLargeError, sendWebResponse } from '../src/runtime/http-bridge.js';
 
 function mockReq({ method = 'GET', url = '/docs?lang=en', headers = {}, body = '' } = {}) {
   const req = Readable.from(body ? [Buffer.from(body)] : []);
@@ -9,6 +9,7 @@ function mockReq({ method = 'GET', url = '/docs?lang=en', headers = {}, body = '
   req.url = url;
   req.headers = { host: 'example.test', ...headers };
   req.protocol = 'http';
+  req.socket = { encrypted: false };
   return req;
 }
 
@@ -27,6 +28,28 @@ describe('http bridge', () => {
     expect(webRequest.method).toBe('POST');
     expect(webRequest.headers.get('content-type')).toBe('application/x-www-form-urlencoded');
     expect(await webRequest.text()).toBe('query=nature');
+  });
+
+  it('does not trust forwarded headers by default', async () => {
+    const req = mockReq({
+      headers: {
+        'x-forwarded-proto': 'https',
+        'x-forwarded-for': '198.51.100.10',
+        'cf-connecting-ip': '198.51.100.11'
+      }
+    });
+
+    const webRequest = await nodeRequestToWebRequest(req);
+
+    expect(webRequest.url).toBe('http://example.test/docs?lang=en');
+    expect(webRequest.headers.get('x-forwarded-for')).toBeNull();
+    expect(webRequest.headers.get('cf-connecting-ip')).toBeNull();
+  });
+
+  it('rejects request bodies over the configured cap', async () => {
+    const req = mockReq({ method: 'POST', body: '123456' });
+
+    await expect(nodeRequestToWebRequest(req, { maxBodyBytes: 5 })).rejects.toBeInstanceOf(RequestBodyTooLargeError);
   });
 
   it('sends status, headers, and body from a Web Response', async () => {
@@ -49,5 +72,23 @@ describe('http bridge', () => {
     expect(expressRes.setHeader).toHaveBeenCalledWith('content-type', 'text/plain; charset=utf-8');
     expect(expressRes.setHeader).toHaveBeenCalledWith('x-test', 'ok');
     expect(expressRes.send.mock.calls[0][0].toString()).toBe('hello');
+  });
+
+  it('streams Web Response bodies to Express when possible', async () => {
+    const chunks = [];
+    const expressRes = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(Buffer.from(chunk));
+        callback();
+      }
+    });
+    expressRes.status = vi.fn().mockReturnThis();
+    expressRes.setHeader = vi.fn();
+    const webResponse = new Response(Readable.toWeb(Readable.from(['streamed'])));
+
+    await sendWebResponse(expressRes, webResponse);
+
+    expect(expressRes.status).toHaveBeenCalledWith(200);
+    expect(Buffer.concat(chunks).toString()).toBe('streamed');
   });
 });

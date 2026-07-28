@@ -7,7 +7,7 @@ import { createApp } from '../src/app.js';
 
 let tempDirs = [];
 
-function testEnv() {
+function testEnv(overrides = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'omniwall-app-'));
   tempDirs.push(dir);
   return {
@@ -16,8 +16,9 @@ function testEnv() {
     ADMIN_PASSWORD: 'test-password-with-more-than-32-characters',
     DATABASE_PATH: join(dir, 'omniwall.sqlite'),
     SITE_NAME: 'OmniWall Test',
-    TRUST_PROXY: true,
-    RUN_SCHEDULED_ON_START: false
+    TRUST_PROXY: false,
+    RUN_SCHEDULED_ON_START: false,
+    ...overrides
   };
 }
 
@@ -59,5 +60,38 @@ describe('OmniWall server app', () => {
     const response = await request(app).get('/docs').expect(500);
 
     expect(response.text).toContain('ADMIN_PASSWORD');
+  });
+
+  it('does not wait for waitUntil tasks before sending a response', async () => {
+    const app = createApp({
+      env: testEnv(),
+      worker: {
+        async fetch(_request, _env, ctx) {
+          ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 250)));
+          return new Response('fast');
+        }
+      }
+    });
+
+    const start = Date.now();
+    const response = await request(app).get('/wait').expect(200);
+
+    expect(response.text).toBe('fast');
+    expect(Date.now() - start).toBeLessThan(150);
+  });
+
+  it('returns 413 when request body exceeds configured cap', async () => {
+    const app = createApp({
+      env: testEnv({ MAX_REQUEST_BODY_BYTES: 5 }),
+      worker: {
+        async fetch() {
+          return new Response('should not run');
+        }
+      }
+    });
+
+    const response = await request(app).post('/too-large').send('123456').expect(413);
+
+    expect(response.text).toContain('Request body too large');
   });
 });

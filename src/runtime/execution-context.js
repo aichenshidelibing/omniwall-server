@@ -4,10 +4,10 @@ export function createExecutionContext(logger = console) {
   return {
     waitUntil(promise) {
       tasks.push(
-        Promise.resolve(promise).catch((error) => {
-          logger.error('waitUntil task failed:', error);
-          throw error;
-        })
+        Promise.resolve(promise).then(
+          (value) => ({ status: 'fulfilled', value }),
+          (reason) => ({ status: 'rejected', reason })
+        )
       );
     },
 
@@ -16,7 +16,13 @@ export function createExecutionContext(logger = console) {
     },
 
     async runWaitUntil() {
-      return Promise.allSettled(tasks);
+      const results = await Promise.all(tasks);
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          logger.error('waitUntil task failed:', result.reason);
+        }
+      }
+      return results;
     }
   };
 }
