@@ -70,6 +70,11 @@ function requestProtocol(req, trustProxy) {
   return req.socket?.encrypted || req.secure ? 'https' : 'http';
 }
 
+function socketClientIp(req) {
+  const ip = req.ip || req.socket?.remoteAddress || req.connection?.remoteAddress;
+  return typeof ip === 'string' && ip.trim() ? ip.trim() : null;
+}
+
 export async function nodeRequestToWebRequest(req, options = {}) {
   const trustProxy = options.trustProxy ?? false;
   const maxBodyBytes = options.maxBodyBytes ?? 1024 * 1024;
@@ -88,6 +93,11 @@ export async function nodeRequestToWebRequest(req, options = {}) {
     } else if (value !== undefined) {
       headers.set(key, String(value));
     }
+  }
+
+  if (!trustProxy) {
+    const clientIp = socketClientIp(req);
+    if (clientIp) headers.set('CF-Connecting-IP', clientIp);
   }
 
   const init = {
