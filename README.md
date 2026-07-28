@@ -235,6 +235,34 @@ DB=你的 D1 数据库绑定
 curl -H "Authorization: Bearer 你的ADMIN_PASSWORD" "https://你的域名/api/d1/init"
 ```
 
+## Node.js + SQLite + Docker 部署
+
+除了 Cloudflare Workers + D1，OmniWall 也可以作为普通服务器程序运行：
+
+```txt
+Node.js 20 + Express + SQLite + Docker Compose
+```
+
+快速启动：
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少设置 ADMIN_PASSWORD 和图片源 API Key
+docker compose up -d --build
+```
+
+默认访问：
+
+```txt
+http://服务器IP:3000/
+http://服务器IP:3000/docs
+http://服务器IP:3000/{ADMIN_USERNAME}/login
+```
+
+Docker 容器启动时会修复 `/app/data` bind mount 权限，再切换到 `node` 用户运行应用。
+
+完整教程见 [`docs/SERVER_DEPLOY.md`](docs/SERVER_DEPLOY.md)。
+
 ---
 
 ## 环境变量与 Secret
