@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "OmniWall Node.js + SQLite server wrapper for the Cloudflare Worker version.",
+  "description": "OmniWall Node.js + SQLite + Docker server deployment.",
   "scripts": {
     "sync:worker": "node scripts/sync-worker-source.mjs",
     "predev": "npm run sync:worker",

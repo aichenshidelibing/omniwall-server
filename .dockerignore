@@ -12,4 +12,3 @@ data
 *.sqlite-shm
 *.sqlite-wal
 coverage
-docs/superpowers/plans
