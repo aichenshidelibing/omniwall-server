@@ -10,7 +10,7 @@ services:
       PORT: 3000
       DATABASE_PATH: /app/data/omniwall.sqlite
     ports:
-      - "3000:3000"
+      - "${OMNIWALL_PORT_BINDING:-3000}:3000"
     volumes:
       - ./data:/app/data
     healthcheck:

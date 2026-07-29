@@ -243,7 +243,16 @@ curl -H "Authorization: Bearer 你的ADMIN_PASSWORD" "https://你的域名/api/d
 Node.js 20 + Express + SQLite + Docker Compose
 ```
 
-快速启动：
+推荐使用交互安装脚本：
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+脚本会引导设置后台账号、强密码、图片源 Key、站点名称、端口绑定、反向代理模式，并可选择自动启动和初始化数据库。
+
+也可以手动启动：
 
 ```bash
 cp .env.example .env

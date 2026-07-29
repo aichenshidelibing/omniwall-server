@@ -18,3 +18,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local installer backups / overrides
+.env.backup-*
+docker-compose.override.yml
+docker-compose.override.yml.backup-*

@@ -28,9 +28,49 @@ docker --version
 docker compose version
 ```
 
-## 2. 配置环境变量
+## 2. 推荐：交互安装脚本
 
-复制模板：
+推荐直接运行安装向导：
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+脚本会引导你配置：
+
+- 后台用户名和 32 位以上强密码
+- Docker 端口绑定：例如 `3000` 或 `127.0.0.1:3000`
+- 直接 demo 模式或生产 HTTPS 反向代理模式
+- `TRUST_PROXY` 安全选项
+- `PUBLIC_BASE_URL`
+- Unsplash / Pexels / Pixabay API Key
+- 站点名称和图标
+- `/api/bg` 签名密钥、Turnstile、人机验证和可选外部审核/翻译配置
+- 是否立即执行 `docker compose up -d --build` 并初始化数据库
+
+安装脚本会生成 `.env`。如果重复运行且检测到已有 `.env`，会询问保留、重新配置或退出；重新配置前会自动备份为 `.env.backup-YYYYMMDD-HHMMSS`。
+
+生产反向代理模式推荐端口绑定：
+
+```bash
+OMNIWALL_PORT_BINDING=127.0.0.1:3000
+TRUST_PROXY=true
+PUBLIC_BASE_URL=https://你的域名
+```
+
+直接端口 demo 模式推荐：
+
+```bash
+OMNIWALL_PORT_BINDING=3000
+TRUST_PROXY=false
+```
+
+生产环境后台登录和 `/api/bg` Cookie 功能必须通过 HTTPS 访问，因为兼容 Worker 的 Cookie 会设置 `Secure`。
+
+## 3. 手动配置环境变量
+
+如果不使用安装脚本，也可以复制模板：
 
 ```bash
 cp .env.example .env
@@ -58,7 +98,7 @@ MAX_REQUEST_BODY_BYTES=1048576
 
 只有当 OmniWall 位于你控制的可信反向代理后面，并且外部用户不能直接访问容器端口时，才设置 `TRUST_PROXY=true`。启用后服务会信任反代传入的 `X-Forwarded-*` 头用于协议/IP 判断。
 
-## 3. 一键启动
+## 4. 一键启动
 
 ```bash
 docker compose up -d --build
@@ -93,7 +133,7 @@ https://你的域名/{ADMIN_USERNAME}/login
 
 首次登录后，系统会生成每日随机后台路径，后续请使用新的后台路径。
 
-## 4. 初始化数据库
+## 5. 初始化数据库
 
 首次访问页面时会自动初始化 SQLite 表。也可以手动初始化：
 
@@ -109,7 +149,7 @@ curl -H "Authorization: Bearer 你的ADMIN_PASSWORD" http://127.0.0.1:3000/api/d
 
 返回包含 `"ok": true` 即成功。
 
-## 5. HTTPS 反向代理建议
+## 6. HTTPS 反向代理建议
 
 推荐只让反向代理暴露到公网，容器端口 `3000` 只监听本机或内网。若使用 Docker Compose 默认的 `3000:3000` 公网映射，请保持 `TRUST_PROXY=false`，不要信任直连客户端伪造的 `X-Forwarded-*` 头。
 
@@ -158,7 +198,7 @@ example.com {
 
 Caddy 会自动申请和续期 HTTPS 证书。同样建议确认直连 3000 端口不对公网开放后再设置 `TRUST_PROXY=true`。
 
-## 6. 数据备份
+## 7. 数据备份
 
 SQLite 数据在：
 
@@ -183,7 +223,7 @@ cp -a data data-backup-$(date +%F)
 docker compose up -d
 ```
 
-## 7. 更新代码
+## 8. 更新代码
 
 ```bash
 git pull
