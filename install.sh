@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$ROOT_DIR/.env"
 COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
 GENERATED_ADMIN_PASSWORD=""
+ADMIN_PATH_SOURCE="fallback"
 
 say() { printf '\033[1;36m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
@@ -27,6 +28,8 @@ read_env_value() {
   if [[ "$value" == "\""*"\"" && ${#value} -ge 2 ]]; then
     value="${value:1:${#value}-2}"
     value="${value//\\\"/\"}"
+    value="${value//\\\$/\$}"
+    value="${value//\\\`/\`}"
     value="${value//\\\\/\\}"
   elif [[ "$value" == "'"*"'" && ${#value} -ge 2 ]]; then
     value="${value:1:${#value}-2}"
@@ -335,6 +338,107 @@ start_and_init() {
   fi
 }
 
+site_origin_for_summary() {
+  local base
+  if [[ -n "${PUBLIC_BASE_URL:-}" ]]; then
+    base="${PUBLIC_BASE_URL%/}"
+  else
+    base="$(http_base_for_binding "${OMNIWALL_PORT_BINDING:-3000}")"
+  fi
+  printf '%s' "$base"
+}
+
+current_admin_suffix() {
+  local fallback="${ADMIN_USERNAME:-admin}" suffix=""
+  ADMIN_PATH_SOURCE="fallback"
+
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    suffix="$(cd "$ROOT_DIR" && docker compose exec -T omniwall node --input-type=module -e '
+import Database from "better-sqlite3";
+const dbPath = process.env.DATABASE_PATH || "/app/data/omniwall.sqlite";
+const db = new Database(dbPath, { readonly: true });
+const get = (key) => {
+  try { return db.prepare("SELECT value FROM admin_config WHERE key = ?").get(key)?.value || ""; }
+  catch { return ""; }
+};
+const username = get("config:admin_username") || process.env.ADMIN_USERNAME || "admin";
+const firstDone = get("config:first_login_done");
+const savedDate = get("config:daily_path_date");
+const savedPath = get("config:daily_path");
+const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+if (!firstDone) console.log(username);
+else if (savedPath && savedDate === today) console.log(savedPath);
+else console.log(username);
+' 2>/dev/null | tail -n 1 || true)"
+    if [[ -n "$suffix" ]]; then
+      ADMIN_PATH_SOURCE="database"
+      printf '%s' "$suffix"
+      return 0
+    fi
+  fi
+
+  printf '%s' "$fallback"
+}
+
+print_completion_summary() {
+  local base suffix login_url dashboard_url docs_url admin_password_display proxy_mode bg_secret_hint image_provider_hint
+  base="$(site_origin_for_summary)"
+  suffix="$(current_admin_suffix)"
+  login_url="$base/$suffix/login"
+  dashboard_url="$base/$suffix/dashboard"
+  docs_url="$base/docs"
+  admin_password_display="${ADMIN_PASSWORD:-<未配置>}"
+
+  if [[ "${TRUST_PROXY:-false}" == "true" ]]; then
+    proxy_mode="可信 HTTPS 反向代理模式（TRUST_PROXY=true）"
+  else
+    proxy_mode="直接端口/demo 模式（TRUST_PROXY=false）"
+  fi
+
+  if [[ -n "${BG_TOKEN_SECRET:-}" ]]; then
+    bg_secret_hint="已配置独立 BG_TOKEN_SECRET"
+  else
+    bg_secret_hint="未配置，/api/bg 将 fallback 到 ADMIN_PASSWORD"
+  fi
+
+  if [[ -n "${UNSPLASH_ACCESS_KEY:-}" || -n "${PEXELS_API_KEY:-}" || -n "${PIXABAY_API_KEY:-}" ]]; then
+    image_provider_hint="已配置至少一个第三方图片源 Key"
+  else
+    image_provider_hint="未配置第三方图片源 Key；仍可使用 Bing 每日壁纸，建议稍后补充图片源 Key"
+  fi
+
+  say "部署完成信息"
+  printf '\n'
+  printf '┌────────────────────────────────────────────────────────────\n'
+  printf '│ OmniWall 安装/配置已完成\n'
+  printf '├────────────────────────────────────────────────────────────\n'
+  printf '│ 站点地址：%s\n' "$base/"
+  printf '│ 在线文档：%s\n' "$docs_url"
+  printf '│ 后台后缀：/%s\n' "$suffix"
+  printf '│ 后台登录：%s\n' "$login_url"
+  printf '│ 后台面板：%s\n' "$dashboard_url"
+  printf '├────────────────────────────────────────────────────────────\n'
+  printf '│ 管理员用户名：%s\n' "${ADMIN_USERNAME:-admin}"
+  printf '│ 管理员密码：%s\n' "$admin_password_display"
+  printf '├────────────────────────────────────────────────────────────\n'
+  printf '│ .env 文件：%s\n' "$ENV_FILE"
+  printf '│ 数据库文件：%s\n' "$ROOT_DIR/data/omniwall.sqlite"
+  printf '│ 端口绑定：%s -> 容器 3000\n' "${OMNIWALL_PORT_BINDING:-3000}"
+  printf '│ 部署模式：%s\n' "$proxy_mode"
+  printf '│ /api/bg 密钥：%s\n' "$bg_secret_hint"
+  printf '│ 图片源状态：%s\n' "$image_provider_hint"
+  printf '└────────────────────────────────────────────────────────────\n'
+  printf '\n'
+
+  warn "请立即保存上面的管理员用户名、密码和后台入口；管理员密码只保存在 .env 中。"
+  if [[ "$ADMIN_PATH_SOURCE" == "fallback" ]]; then
+    warn "当前后台后缀通常是首次登录后缀；首次登录成功后系统会自动生成每日随机后台后缀。"
+  else
+    warn "后台后缀来自当前数据库状态；首次登录后或每天轮换后以后端/通知中的新后缀为准。"
+  fi
+  warn "生产环境后台登录和 /api/bg Cookie 功能必须通过 HTTPS。"
+}
+
 configure() {
   local mode existing_admin existing_bg existing_value default_binding default_trust generated_bg default_admin_username default_max_body default_schedule default_run_on_start
   local change_action="new"
@@ -442,6 +546,11 @@ main() {
     ADMIN_USERNAME="$(read_env_value ADMIN_USERNAME || true)"; ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
     ADMIN_PASSWORD="$(read_env_value ADMIN_PASSWORD || true)"
     PUBLIC_BASE_URL="$(read_env_value PUBLIC_BASE_URL || true)"
+    TRUST_PROXY="$(read_env_value TRUST_PROXY || true)"; TRUST_PROXY="${TRUST_PROXY:-false}"
+    BG_TOKEN_SECRET="$(read_env_value BG_TOKEN_SECRET || true)"
+    UNSPLASH_ACCESS_KEY="$(read_env_value UNSPLASH_ACCESS_KEY || true)"
+    PEXELS_API_KEY="$(read_env_value PEXELS_API_KEY || true)"
+    PIXABAY_API_KEY="$(read_env_value PIXABAY_API_KEY || true)"
   else
     info "已写入：$ENV_FILE"
   fi
@@ -456,20 +565,7 @@ main() {
     info "你可以稍后执行：docker compose up -d --build"
   fi
 
-  say "安装配置完成"
-  info ".env：$ENV_FILE"
-  info "端口绑定：${OMNIWALL_PORT_BINDING:-3000}:3000"
-  if [[ -n "${PUBLIC_BASE_URL:-}" ]]; then
-    info "站点地址：$PUBLIC_BASE_URL"
-    info "首次后台入口：$PUBLIC_BASE_URL/${ADMIN_USERNAME:-admin}/login"
-  else
-    info "本地检查：$(http_base_for_binding "${OMNIWALL_PORT_BINDING:-3000}")/docs"
-    info "首次后台入口：$(http_base_for_binding "${OMNIWALL_PORT_BINDING:-3000}")/${ADMIN_USERNAME:-admin}/login（仅限本地/demo；生产后台请使用 HTTPS）"
-  fi
-  if [[ -n "$GENERATED_ADMIN_PASSWORD" ]]; then
-    warn "已生成 ADMIN_PASSWORD，请立即保存，后续不会再次显示：$GENERATED_ADMIN_PASSWORD"
-  fi
-  warn "生产环境后台登录和 /api/bg Cookie 功能需要 HTTPS。"
+  print_completion_summary
 }
 
 main "$@"
