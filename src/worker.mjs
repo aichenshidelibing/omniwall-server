@@ -1284,15 +1284,29 @@ async function authenticateApiKey(request, env) {
   }
 }
 
+const rateLimitMemory = new Map();
+const RATE_LIMIT_MEMORY_TTL_MS = 60000;
+
+async function persistRateLimit(env, ipHash, data) {
+  try {
+    await env.DB.prepare("INSERT OR REPLACE INTO rate_limits (ip_hash, window_type, timestamps, updated_at) VALUES (?, 'combined', ?, datetime('now'))").bind(ipHash, JSON.stringify(data)).run();
+  } catch (_) {}
+}
+
 async function checkRateLimit(request, env, config, principal = null) {
   const ipHash = principal?.identity ? await hashIdentifier(principal.identity, env.ADMIN_PASSWORD || "fallback") : await hashIdentifier(getClientIp(request), env.ADMIN_PASSWORD || "fallback");
   if (!principal && await checkWhitelist(env.DB, ipHash, env)) return { ok: true, ipHash, whitelisted: true };
   const now = Math.floor(Date.now() / 1000);
+  const cached = rateLimitMemory.get(ipHash);
   let data;
-  try {
-    const row = await env.DB.prepare("SELECT timestamps FROM rate_limits WHERE ip_hash = ? AND window_type = 'combined'").bind(ipHash).first();
-    data = row ? JSON.parse(row.timestamps) : { m: [], h: [], d: [] };
-  } catch (_) { data = { m: [], h: [], d: [] }; }
+  if (cached && (Date.now() - cached.loadedAt) < RATE_LIMIT_MEMORY_TTL_MS) {
+    data = cached.data;
+  } else {
+    try {
+      const row = await env.DB.prepare("SELECT timestamps FROM rate_limits WHERE ip_hash = ? AND window_type = 'combined'").bind(ipHash).first();
+      data = row ? JSON.parse(row.timestamps) : { m: [], h: [], d: [] };
+    } catch (_) { data = { m: [], h: [], d: [] }; }
+  }
   const windows = [
     ["minute", 60, principal?.limits?.minute || config.rateLimits.minute, "m"],
     ["hour", 3600, principal?.limits?.hour || config.rateLimits.hour, "h"],
@@ -1302,11 +1316,13 @@ async function checkRateLimit(request, env, config, principal = null) {
     data[code] = data[code].filter(t => now - t < ttl);
     data[code].push(now);
     if (data[code].length > Number(limit)) {
-      await env.DB.prepare("INSERT OR REPLACE INTO rate_limits (ip_hash, window_type, timestamps, updated_at) VALUES (?, 'combined', ?, datetime('now'))").bind(ipHash, JSON.stringify(data)).run();
+      rateLimitMemory.set(ipHash, { data, loadedAt: Date.now() });
+      await persistRateLimit(env, ipHash, data);
       return { ok: false, ipHash, window: name, limit, retryAfter: ttl };
     }
   }
-  await env.DB.prepare("INSERT OR REPLACE INTO rate_limits (ip_hash, window_type, timestamps, updated_at) VALUES (?, 'combined', ?, datetime('now'))").bind(ipHash, JSON.stringify(data)).run();
+  rateLimitMemory.set(ipHash, { data, loadedAt: Date.now() });
+  if (!cached || (Date.now() - cached.loadedAt) >= RATE_LIMIT_MEMORY_TTL_MS) await persistRateLimit(env, ipHash, data);
   return { ok: true, ipHash };
 }
 
@@ -1497,21 +1513,29 @@ function inferOrientation(width, height) {
   return width > height ? "landscape" : "portrait";
 }
 
+const quotaMemory = new Map();
+const quotaPersistedAt = new Map();
+const quotaWarningAt = new Map();
+
 async function updateQuota(store, source, quota, env = null) {
   if (!quota) return;
   if (quota.limit !== undefined) {
-    try {
-      await env.DB.prepare("INSERT OR REPLACE INTO quota (source, used, limit_val, remaining, updated_at) VALUES (?, ?, ?, ?, datetime('now'))").bind(source, Number(quota.used || 0), Number(quota.limit || 0), Number(quota.remaining || 0)).run();
-    } catch (_) {}
+    const normalized = { used: Number(quota.used || 0), limit: Number(quota.limit || 0), remaining: Number(quota.remaining || 0) };
+    quotaMemory.set(source, normalized);
+    const lastPersisted = quotaPersistedAt.get(source) || 0;
+    if (env && Date.now() - lastPersisted >= 60000) {
+      quotaPersistedAt.set(source, Date.now());
+      try { await env.DB.prepare("INSERT OR REPLACE INTO quota (source, used, limit_val, remaining, updated_at) VALUES (?, ?, ?, ?, datetime('now'))").bind(source, normalized.used, normalized.limit, normalized.remaining).run(); } catch (_) {}
+    }
   }
   if (env && quota.limit && quota.remaining !== undefined && Number(quota.limit) > 0) {
     const percent = Number(quota.remaining) / Number(quota.limit);
     if (percent < 0.1) {
       try {
-        const row = await env.DB.prepare("SELECT value FROM config WHERE key = ?").bind(`quota_warn:${source}`).first();
-        const lastWarn = row ? row.value : "";
+        const lastWarn = quotaWarningAt.get(source) || "";
         if (lastWarn !== String(quota.remaining)) {
-          await env.DB.prepare("INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))").bind(`quota_warn:${source}`, String(quota.remaining)).run();
+          quotaWarningAt.set(source, String(quota.remaining));
+          if (env.DB) await env.DB.prepare("INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))").bind(`quota_warn:${source}`, String(quota.remaining)).run();
           await sendNotification("quota_warning", { source, remaining: quota.remaining, limit: quota.limit, percent: Math.round(percent * 100) }, env);
         }
       } catch (_) {}
@@ -1649,12 +1673,52 @@ async function getAllPresets(db) {
   return [...BUILTIN_PRESETS, ...custom];
 }
 
+const analyticsQueue = [];
+let analyticsFlushTimer = null;
+let analyticsFlushPromise = null;
+
+function analyticsEnabled(env) {
+  if (env?.ANALYTICS_ENABLED === false || String(env?.ANALYTICS_ENABLED).toLowerCase() === "false") return false;
+  const rate = Number(env?.ANALYTICS_SAMPLE_RATE ?? 0.1);
+  return Number.isFinite(rate) && rate > 0 && (rate >= 1 || Math.random() < rate);
+}
+
+async function flushAnalytics(env) {
+  if (analyticsFlushPromise || !analyticsQueue.length || !env?.DB) return analyticsFlushPromise;
+  const maxBatch = Math.max(1, Math.min(100, Number(env.D1_MAX_BATCH_SIZE) || 50));
+  const records = analyticsQueue.splice(0, maxBatch);
+  analyticsFlushPromise = (async () => {
+    try {
+      const statements = records.map((record) => env.DB.prepare("INSERT INTO request_analytics (path, source, query, orientation, color, aspect_ratio, cache_hit, ok, status, latency, ip_hash, api_key_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(...record));
+      if (typeof env.DB.batch === "function") await env.DB.batch(statements);
+      else for (const statement of statements) await statement.run();
+    } catch (_) {
+      // Drop this best-effort telemetry batch; request serving must not fail.
+    } finally {
+      analyticsFlushPromise = null;
+      if (analyticsQueue.length) scheduleAnalyticsFlush(env);
+    }
+  })();
+  return analyticsFlushPromise;
+}
+
+function scheduleAnalyticsFlush(env) {
+  if (analyticsFlushTimer || !analyticsQueue.length) return;
+  const interval = Math.max(1000, (Number(env?.D1_FLUSH_INTERVAL_SECONDS) || 30) * 1000);
+  analyticsFlushTimer = setTimeout(() => {
+    analyticsFlushTimer = null;
+    flushAnalytics(env).catch(() => {});
+  }, interval);
+}
+
 async function trackRequestAnalytics(env, request, params, result, startMs, ipHash, status = 200) {
+  if (!analyticsEnabled(env)) return;
   try {
     const latency = Math.max(0, Date.now() - startMs);
-    await env.DB.prepare("INSERT INTO request_analytics (path, source, query, orientation, color, aspect_ratio, cache_hit, ok, status, latency, ip_hash, api_key_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .bind(new URL(request.url).pathname, result?.source || params.source || "random", String(params.originalQuery || params.query || "").slice(0, 120), params.orientation || "all", params.color || "", params.aspectRatio || "", result?.cacheHit ? 1 : 0, result?.ok ? 1 : 0, Number(status) || 200, latency, ipHash || "", params.apiKeyId || "")
-      .run();
+    analyticsQueue.push([new URL(request.url).pathname, result?.source || params.source || "random", String(params.originalQuery || params.query || "").slice(0, 120), params.orientation || "all", params.color || "", params.aspectRatio || "", result?.cacheHit ? 1 : 0, result?.ok ? 1 : 0, Number(status) || 200, latency, ipHash || "", params.apiKeyId || ""]);
+    const maxBatch = Math.max(1, Math.min(100, Number(env.D1_MAX_BATCH_SIZE) || 50));
+    if (analyticsQueue.length >= maxBatch) await flushAnalytics(env);
+    else scheduleAnalyticsFlush(env);
   } catch (_) {}
 }
 
@@ -1841,9 +1905,12 @@ async function recordSourceSuccess(env, source) {
 
 async function getQuotaMap(env) {
   const map = {};
+  for (const [source, quota] of quotaMemory) map[source] = quota;
   try {
     const rows = await env.DB.prepare("SELECT source, limit_val, remaining FROM quota").all();
-    for (const r of (rows.results || [])) map[r.source] = { limit: Number(r.limit_val || 0), remaining: Number(r.remaining || 0) };
+    for (const r of (rows.results || [])) {
+      if (!map[r.source]) map[r.source] = { limit: Number(r.limit_val || 0), remaining: Number(r.remaining || 0) };
+    }
   } catch (_) {}
   return map;
 }
