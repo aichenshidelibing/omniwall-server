@@ -1,26 +1,44 @@
-# Backup files
-*.backup
-
-# Environment variables
+# Environment variables and local secrets
 .env
+.env.*
+!.env.example
 .dev.vars
-
-# Secrets
 wrangler.toml
 
-# IDE
-.vscode/
-.idea/
+# Local databases and runtime state
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.db
+*.db-*
+data/
+:memory:
 
-# OS
+# Dependencies and generated build/test output
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+
+# Temporary files and logs
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.backup
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
+# IDE and local tooling
+.vscode/
+.idea/
+.claude/
+.superpowers/
 
-# Local installer backups / overrides
-.env.backup-*
+# Local installer overrides
+Dockerfile.local
 docker-compose.override.yml
 docker-compose.override.yml.backup-*
-.superpowers/

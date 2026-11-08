@@ -1,272 +1,62 @@
-# OmniWall Node.js + SQLite + Docker 部署指南
+# OmniWall 裸 Node + systemd 部署
 
-这个部署方式适合 VPS、NAS、宝塔 Docker、1Panel、CasaOS、Portainer 或任意支持 Docker Compose 的服务器。
+当前生产入口是 `src/server.js`，使用 Node.js 20+、Fastify 和本地 SQLite。Docker、Cloudflare Worker/D1 兼容代码已隔离到 `legacy/`，仅供迁移参考。
 
-## 运行架构
-
-```txt
-浏览器 / API 客户端
-  -> HTTPS 反向代理：Nginx / Caddy / 面板反代（生产必需）
-  -> Docker 容器：Node.js + Express
-  -> SQLite 数据库：./data/omniwall.sqlite
-```
-
-服务器版保留原 Cloudflare Worker 的页面和接口，并用 SQLite 替代 Cloudflare D1。
-
-## 1. 准备服务器
-
-服务器需要安装：
-
-- Docker
-- Docker Compose v2
-- 一个已配置 TLS 证书的域名或 HTTPS 反向代理
-
-检查命令：
+## 安装
 
 ```bash
-docker --version
-docker compose version
-```
-
-## 2. 推荐：交互安装脚本
-
-推荐直接运行安装向导：
-
-```bash
-chmod +x install.sh
-./install.sh
-```
-
-脚本会引导你配置：
-
-- 后台用户名和 32 位以上强密码
-- Docker 端口绑定：例如 `3000` 或 `127.0.0.1:3000`
-- 直接 demo 模式或生产 HTTPS 反向代理模式
-- `TRUST_PROXY` 安全选项
-- `PUBLIC_BASE_URL`
-- Unsplash / Pexels / Pixabay API Key
-- 站点名称和图标
-- `/api/bg` 签名密钥、Turnstile、人机验证和可选外部审核/翻译配置
-- 是否立即执行 `docker compose up -d --build` 并初始化数据库
-
-安装脚本会生成 `.env`。如果重复运行且检测到已有 `.env`，会询问保留、重新配置或退出；重新配置前会自动备份为 `.env.backup-YYYYMMDD-HHMMSS`。
-
-生产反向代理模式推荐端口绑定：
-
-```bash
-OMNIWALL_PORT_BINDING=127.0.0.1:3000
-TRUST_PROXY=true
-PUBLIC_BASE_URL=https://你的域名
-```
-
-直接端口 demo 模式推荐：
-
-```bash
-OMNIWALL_PORT_BINDING=3000
-TRUST_PROXY=false
-```
-
-生产环境后台登录和 `/api/bg` Cookie 功能必须通过 HTTPS 访问，因为兼容 Worker 的 Cookie 会设置 `Secure`。
-
-## 3. 手动配置环境变量
-
-如果不使用安装脚本，也可以复制模板：
-
-```bash
+sudo useradd --system --home /opt/omniwall-server --shell /usr/sbin/nologin omniwall
+sudo mkdir -p /opt/omniwall-server
+sudo chown omniwall:omniwall /opt/omniwall-server
+git clone <仓库地址> /opt/omniwall-server
+cd /opt/omniwall-server
+npm ci
 cp .env.example .env
+chmod 600 .env
 ```
 
-至少修改：
+编辑 `.env`，至少设置 32 位以上的 `ADMIN_PASSWORD`。默认端口为高位端口 `18080`，可由安装脚本交互覆盖。运行 `sudo ./install.sh --dry-run` 可仅做静态前置检查，不会改文件、复制源码、安装依赖或启停服务。安装脚本必须从源码树运行，会将源码复制到 `APP_DIR` 后再执行 `npm ci`；通知配置按 provider 写入 `NOTIFICATION_PROVIDER` 与 JSON `NOTIFICATION_CONFIG`（Telegram 需要 token/chatId，邮件需要 apiKey/from/to，Webhook 需要 HTTPS URL）。脚本使用 `node JSON.stringify` 生成并规范化 JSON，避免 shell quoting 混入 dotenv 值；`EnvironmentFile` 会按 dotenv/systemd 的 `KEY=value` 规则读取该单行 JSON，JSON 内的双引号不需要 shell 转义。IP/主机名直连部署使用 `HTTPS=true`、`TLS_KEY_FILE`、`TLS_CERT_FILE`，脚本生成的 SAN 对 IPv4/IPv6 使用 IP，对主机名使用 DNS，并拒绝空格、路径分隔符及其他非法主机名字符。systemd 使用实际解析出的 Node 路径。安装并登录管理后台后，进入通知设置保存配置，再调用对应 provider 的“测试通知”步骤（`POST /api/admin/notifications/:provider/test`，需管理员会话和 CSRF），确认实际连通性；`GET /healthz` 仅验证服务存活，不代表通知渠道可达。卸载请仅手动运行 `sudo ./uninstall.sh`，运行时必须二次输入 `DELETE-OMNIWALL`，将删除服务、安装目录、SQLite、`.env`、日志和证书。
+
+## systemd
+
+创建 `/etc/systemd/system/omniwall.service`：
+
+```ini
+[Unit]
+Description=OmniWall Node.js server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=omniwall
+Group=omniwall
+WorkingDirectory=/opt/omniwall-server
+EnvironmentFile=/opt/omniwall-server/.env
+ExecStart=/usr/bin/node /opt/omniwall-server/src/server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ```bash
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=请改成32位以上强密码
-UNSPLASH_ACCESS_KEY=你的 Unsplash key，可留空
-PEXELS_API_KEY=你的 Pexels key，可留空
-PIXABAY_API_KEY=你的 Pixabay key，可留空
-SITE_NAME=OmniWall
+sudo systemctl daemon-reload
+sudo systemctl enable --now omniwall
+sudo journalctl -u omniwall -f
 ```
 
-`ADMIN_PASSWORD` 同时用于后台登录和加密密钥派生。上线后不要随意更换，否则旧的加密缓存、通知配置或反馈内容可能无法解密。
-
-安全默认值：
+## 更新与备份
 
 ```bash
-TRUST_PROXY=false
-MAX_REQUEST_BODY_BYTES=1048576
-```
-
-只有当 OmniWall 位于你控制的可信反向代理后面，并且外部用户不能直接访问容器端口时，才设置 `TRUST_PROXY=true`。启用后服务会信任反代传入的 `X-Forwarded-*` 头用于协议/IP 判断。
-
-## 4. 一键启动
-
-```bash
-docker compose up -d --build
-```
-
-查看日志：
-
-```bash
-docker compose logs -f omniwall
-```
-
-本地或局域网 smoke/demo 可以直接访问：
-
-```txt
-http://服务器IP:3000/
-http://服务器IP:3000/docs
-```
-
-生产环境的后台登录和 `/api/bg` 背景 Cookie 功能需要 HTTPS，因为 Worker 兼容逻辑设置的是 `Secure` Cookie。请把 TLS 放在 OmniWall 前面，然后访问：
-
-```txt
-https://你的域名/
-https://你的域名/docs
-https://你的域名/admin/login
-```
-
-如果 `ADMIN_USERNAME` 不是 `admin`，首次后台入口是：
-
-```txt
-https://你的域名/{ADMIN_USERNAME}/login
-```
-
-首次登录后，系统会生成每日随机后台路径，后续请使用新的后台路径。
-
-## 5. 初始化数据库
-
-首次访问页面时会自动初始化 SQLite 表。也可以手动初始化：
-
-```bash
-curl -H "Authorization: Bearer 你的ADMIN_PASSWORD" https://你的域名/api/d1/init
-```
-
-本地 smoke/demo 可使用：
-
-```bash
-curl -H "Authorization: Bearer 你的ADMIN_PASSWORD" http://127.0.0.1:3000/api/d1/init
-```
-
-返回包含 `"ok": true` 即成功。
-
-## 6. HTTPS 反向代理建议
-
-推荐只让反向代理暴露到公网，容器端口 `3000` 只监听本机或内网。若使用 Docker Compose 默认的 `3000:3000` 公网映射，请保持 `TRUST_PROXY=false`，不要信任直连客户端伪造的 `X-Forwarded-*` 头。
-
-### Nginx HTTPS 示例
-
-```nginx
-server {
-    listen 80;
-    server_name example.com;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name example.com;
-
-    ssl_certificate /etc/letsencrypt/live/example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-    }
-}
-```
-
-确认 3000 端口只允许反代访问后，可在 `.env` 中启用：
-
-```bash
-TRUST_PROXY=true
-```
-
-### Caddy HTTPS 示例
-
-```caddyfile
-example.com {
-    reverse_proxy 127.0.0.1:3000 {
-        header_up X-Forwarded-Proto https
-    }
-}
-```
-
-Caddy 会自动申请和续期 HTTPS 证书。同样建议确认直连 3000 端口不对公网开放后再设置 `TRUST_PROXY=true`。
-
-## 7. 数据备份
-
-SQLite 数据在：
-
-```txt
-./data/omniwall.sqlite
-```
-
-推荐同时备份这些文件：
-
-```txt
-./data/omniwall.sqlite
-./data/omniwall.sqlite-wal
-./data/omniwall.sqlite-shm
-.env
-```
-
-在线备份前可以先短暂停止容器：
-
-```bash
-docker compose down
-cp -a data data-backup-$(date +%F)
-docker compose up -d
-```
-
-## 8. 更新代码
-
-```bash
+cd /opt/omniwall-server
 git pull
-docker compose up -d --build
+npm ci
+npm test
+sudo systemctl restart omniwall
 ```
 
-数据库迁移会在启动和首次请求时自动执行。
-
-## 8. 常见问题
-
-### 页面提示 ADMIN_PASSWORD 未配置
-
-检查 `.env` 是否存在，并确认：
-
-```bash
-grep ADMIN_PASSWORD .env
-```
-
-### 图片源不可用
-
-至少配置一个图片平台 Key，或者只使用不需要 Key 的 Bing 每日壁纸源。配置后重启：
-
-```bash
-docker compose restart omniwall
-```
-
-### 后台登录后仍未保持登录，或首页背景接口提示缺少 Cookie
-
-生产后台会设置 `Secure` Cookie，浏览器只会在 HTTPS 下保存和发送。请使用 `https://你的域名/{ADMIN_USERNAME}/login`，不要用公网明文 HTTP 做生产后台登录。
-
-### 获取真实客户端 IP
-
-如果部署在可信反向代理后面，并且直连端口没有暴露给公网，可以设置：
-
-```bash
-TRUST_PROXY=true
-```
-
-并确保反代传递：
-
-```txt
-X-Forwarded-For
-X-Forwarded-Proto
-```
-
-如果是直接暴露 `3000:3000`，请保持 `TRUST_PROXY=false`。
+备份 `data/omniwall.sqlite`、对应的 `-wal`/`-shm` 文件和 `.env`。迁移历史文件位于 `legacy/`，不要从其中的 Docker 或 Worker 文件启动生产服务。

@@ -31,8 +31,6 @@ export function loadServerEnv(overrides = {}) {
     RUN_SCHEDULED_ON_START: boolFromEnv(raw.RUN_SCHEDULED_ON_START, true),
     ANALYTICS_ENABLED: boolFromEnv(raw.ANALYTICS_ENABLED, true),
     ANALYTICS_SAMPLE_RATE: Math.min(1, Math.max(0, Number(raw.ANALYTICS_SAMPLE_RATE ?? 0.1) || 0.1)),
-    D1_FLUSH_INTERVAL_SECONDS: intFromEnv(raw.D1_FLUSH_INTERVAL_SECONDS, 30, { min: 1, max: 3600 }),
-    D1_MAX_BATCH_SIZE: intFromEnv(raw.D1_MAX_BATCH_SIZE, 50, { min: 1, max: 100 }),
     ADMIN_USERNAME: raw.ADMIN_USERNAME || 'admin',
     ADMIN_PASSWORD: raw.ADMIN_PASSWORD || '',
     SITE_NAME: raw.SITE_NAME || 'OmniWall',

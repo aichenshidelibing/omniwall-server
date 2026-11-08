@@ -1,29 +1,31 @@
-import { createApp } from './app.js';
-import { assertRequiredServerEnv, loadServerEnv } from './env.js';
-import { startScheduler } from './jobs/scheduler.js';
+import { buildApp } from './app.js';
+import { loadConfig } from './config/env.js';
+import { createDatabase } from './db/database.js';
+import { migrate } from './db/migrate.js';
+import fs from 'node:fs';
 
-const env = loadServerEnv();
-assertRequiredServerEnv(env);
-
-const app = createApp({ env });
-const server = app.listen(env.PORT, env.HOST, () => {
-  console.log(`OmniWall server listening on http://${env.HOST}:${env.PORT}`);
-  console.log(`SQLite database: ${env.DATABASE_PATH}`);
-});
-
-const stopScheduler = startScheduler(app.locals.worker, app.locals.workerEnv, {
-  intervalSeconds: env.SCHEDULE_INTERVAL_SECONDS,
-  runOnStart: env.RUN_SCHEDULED_ON_START
-});
-
-function shutdown(signal) {
-  console.log(`Received ${signal}, shutting down OmniWall server...`);
-  stopScheduler();
-  server.close(() => {
-    app.locals.workerEnv.DB?.close?.();
-    process.exit(0);
-  });
+export async function startServer() {
+  const config = loadConfig();
+  const db = createDatabase(config.databasePath);
+  migrate(db);
+  const app = buildApp({ config, db });
+  const close = async (signal) => {
+    app.log.info({ signal }, 'shutting down');
+    await app.close();
+  };
+  process.once('SIGINT', close);
+  process.once('SIGTERM', close);
+  const listenOptions = { host: config.host, port: config.port };
+  if (config.https) {
+    listenOptions.https = { key: fs.readFileSync(config.tlsKeyFile), cert: fs.readFileSync(config.tlsCertFile) };
+  }
+  await app.listen(listenOptions);
+  return app;
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+if (import.meta.url === `file://${process.argv[1]}`) {
+  startServer().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
