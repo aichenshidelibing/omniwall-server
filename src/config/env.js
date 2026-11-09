@@ -43,6 +43,9 @@ export function loadConfig(overrides = {}) {
     imageRecentTtlSeconds: integer(raw.IMAGE_RECENT_TTL_SECONDS, 300, { min: 1, max: 604800 }),
     adminUsername: raw.ADMIN_USERNAME || '',
     adminPassword: raw.ADMIN_PASSWORD || '',
+    adminPathDurationSeconds: integer(raw.ADMIN_PATH_DURATION_SECONDS, 86400, { min: 300, max: 31536000 }),
+    adminAllowLegacyPath: boolean(raw.ADMIN_ALLOW_LEGACY_PATH, false),
+    adminPathToken: raw.ADMIN_PATH_TOKEN || '',
     ipHashSalt: raw.IP_HASH_SALT || '',
     feedbackRateWindowSeconds: integer(raw.FEEDBACK_RATE_WINDOW_SECONDS, 60, { min: 1, max: 86400 }),
     feedbackRateMax: integer(raw.FEEDBACK_RATE_MAX, 3, { min: 1, max: 100 }),
@@ -50,6 +53,8 @@ export function loadConfig(overrides = {}) {
     loginRateWindowSeconds: integer(raw.LOGIN_RATE_WINDOW_SECONDS, 300, { min: 1, max: 86400 }),
     apiRateMax: integer(raw.API_RATE_MAX, 120, { min: 1, max: 10000 }),
     apiRateWindowSeconds: integer(raw.API_RATE_WINDOW_SECONDS, 60, { min: 1, max: 86400 }),
+    apiKeyAbuseRateMax: integer(raw.API_KEY_ABUSE_RATE_MAX, 600, { min: 1, max: 100000 }),
+    apiKeyAbuseRateWindowSeconds: integer(raw.API_KEY_ABUSE_RATE_WINDOW_SECONDS, 60, { min: 1, max: 86400 }),
     corsOrigins: String(raw.CORS_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean),
     notificationToken: raw.NOTIFICATION_TOKEN || '',
     notificationProviders: (() => {

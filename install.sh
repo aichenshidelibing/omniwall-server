@@ -25,7 +25,9 @@ node -e 'const net=require("node:net"); const h=process.argv[1]; const hostname=
 if [[ "$PUBLIC_HOST" =~ ^[0-9.]+$ ]] && node -e 'process.exit(require("node:net").isIP(process.argv[1]) === 4 ? 0 : 1)' "$PUBLIC_HOST"; then SAN="IP:${PUBLIC_HOST}"; elif node -e 'process.exit(require("node:net").isIP(process.argv[1]) === 6 ? 0 : 1)' "$PUBLIC_HOST"; then SAN="IP:${PUBLIC_HOST}"; else SAN="DNS:${PUBLIC_HOST}"; fi
 read -r -p '管理员用户名 [admin]: ' ADMIN_USERNAME; ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
 while :; do read -r -s -p '管理员密码（至少 32 字符）: ' ADMIN_PASSWORD; printf '\n'; [[ ${#ADMIN_PASSWORD} -ge 32 ]] && break; say '密码过短。'; done
-read -r -s -p 'CAP secret（可留空）: ' CAP_SECRET; printf '\n'; read -r -s -p 'Turnstile secret（可留空）: ' TURNSTILE_SECRET; printf '\n'; read -r -p 'CAP 服务 URL（可留空）: ' CAP_SERVER_URL
+ADMIN_PATH_TOKEN=$(openssl rand -base64 48 | tr -d '=+/\n' | cut -c1-64)
+read -r -p '管理员入口有效期（秒，300-31536000） [86400]: ' ADMIN_PATH_DURATION_SECONDS; ADMIN_PATH_DURATION_SECONDS=${ADMIN_PATH_DURATION_SECONDS:-86400}; [[ "$ADMIN_PATH_DURATION_SECONDS" =~ ^[0-9]+$ && "$ADMIN_PATH_DURATION_SECONDS" -ge 300 && "$ADMIN_PATH_DURATION_SECONDS" -le 31536000 ]] || die '管理员入口有效期必须为 300-31536000 秒。'
+read -r -p 'CAPTCHA provider（none/cap/turnstile） [none]: ' CAPTCHA_PROVIDER; CAPTCHA_PROVIDER=${CAPTCHA_PROVIDER:-none}; case "$CAPTCHA_PROVIDER" in none|cap|turnstile) ;; *) die '不支持的 CAPTCHA provider。';; esac; read -r -s -p 'CAP secret（可留空）: ' CAP_SECRET; printf '\n'; read -r -s -p 'Turnstile secret（可留空）: ' TURNSTILE_SECRET; printf '\n'; read -r -p 'CAP 服务 URL（可留空）: ' CAP_SERVER_URL
 read -r -p '图源 Unsplash API key（可留空）: ' UNSPLASH_ACCESS_KEY; read -r -p '图源 Pexels API key（可留空）: ' PEXELS_API_KEY; read -r -p '图源 Pixabay API key（可留空）: ' PIXABAY_API_KEY; read -r -p '图源 Bing API key（可留空）: ' BING_API_KEY
 NOTIFY_PROVIDER=""; while [[ -z "$NOTIFY_PROVIDER" ]]; do read -r -p '通知渠道（telegram/webhook/lark/dingtalk/resend/sendgrid）: ' NOTIFY_PROVIDER; done
 case "$NOTIFY_PROVIDER" in telegram) read -r -p 'Telegram bot token: ' N_TOKEN; read -r -p 'Telegram chat ID: ' N_CHAT_ID; NOTIFY_CONFIG=$(node -e 'console.log(JSON.stringify({token:process.argv[1],chatId:process.argv[2]}))' "$N_TOKEN" "$N_CHAT_ID");; webhook|lark|dingtalk) read -r -p 'Webhook URL: ' N_URL; [[ "$N_URL" == https://* ]] || die 'Webhook URL 必须使用 HTTPS。'; NOTIFY_CONFIG=$(node -e 'console.log(JSON.stringify({url:process.argv[1]}))' "$N_URL");; resend|sendgrid) read -r -p 'API key: ' N_KEY; read -r -p '发件人邮箱: ' N_FROM; read -r -p '收件人邮箱: ' N_TO; NOTIFY_CONFIG=$(node -e 'console.log(JSON.stringify({apiKey:process.argv[1],from:process.argv[2],to:process.argv[3]}))' "$N_KEY" "$N_FROM" "$N_TO");; *) die '不支持的通知渠道。'; esac
@@ -43,6 +45,9 @@ DATABASE_PATH=$APP_DIR/data/omniwall.sqlite
 TRUST_PROXY=false
 ADMIN_USERNAME=$ADMIN_USERNAME
 ADMIN_PASSWORD=$(printf '%q' "$ADMIN_PASSWORD")
+ADMIN_PATH_TOKEN=$ADMIN_PATH_TOKEN
+ADMIN_PATH_DURATION_SECONDS=$ADMIN_PATH_DURATION_SECONDS
+CAPTCHA_PROVIDER=$CAPTCHA_PROVIDER
 CAP_SERVER_URL=$(printf '%q' "$CAP_SERVER_URL")
 CAP_SECRET=$(printf '%q' "$CAP_SECRET")
 TURNSTILE_SECRET=$(printf '%q' "$TURNSTILE_SECRET")
@@ -79,3 +84,4 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload; systemctl enable --now "$SERVICE_NAME"
 say "安装完成：https://${PUBLIC_HOST}:${PORT}（自签证书，请导入 certs/server.crt）"
+say "管理员入口（请立即保存，仅显示一次）：https://${PUBLIC_HOST}:${PORT}/admin/${ADMIN_PATH_TOKEN}"

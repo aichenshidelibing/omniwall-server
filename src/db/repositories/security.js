@@ -4,6 +4,7 @@ export function hashIp(ip, salt = '') { return createHash('sha256').update(`${sa
 
 export function createSecurityRepository(db) {
   return {
+    db,
     audit(event, data = {}) {
       db.prepare('INSERT INTO security_audit (event, ip_hash, username, metadata) VALUES (?, ?, ?, ?)').run(event, data.ipHash || '', data.username || '', JSON.stringify(data.metadata || {}));
     },

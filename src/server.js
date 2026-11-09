@@ -20,6 +20,7 @@ export async function startServer() {
     listenOptions.https = { key: fs.readFileSync(config.tlsKeyFile), cert: fs.readFileSync(config.tlsCertFile) };
   }
   await app.listen(listenOptions);
+  if (app.adminEntrypoint?.token) app.log.info({ adminPath: '/admin/[one-time-token]', expiresAt: app.adminEntrypoint.expiresAt }, 'admin entrypoint ready');
   return app;
 }
 

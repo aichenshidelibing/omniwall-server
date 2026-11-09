@@ -1,4 +1,5 @@
 import { hashIp, createSecurityRepository } from './db/repositories/security.js';
+import { createHash } from 'node:crypto';
 
 function clientIp(request) { return request.ip || 'unknown'; }
 
@@ -26,8 +27,24 @@ export function registerSecurity(app, { db, config = {} }) {
       return reply.code(204).send();
     }
     if (crossOrigin && allowed.length) return reply.code(403).send({ error: 'origin_not_allowed' });
-    const limit = Number(config.apiRateMax || 120);
-    const window = Number(config.apiRateWindowSeconds || 60);
-    if (request.url.startsWith('/api/') && !security.allowRate(`api:${hashIp(clientIp(request), config.ipHashSalt || '')}`, limit, window)) return reply.code(429).send({ error: 'rate_limited' });
+    if (request.url.startsWith('/api/')) {
+      const limit = Number(config.apiRateMax || 120);
+      const window = Number(config.apiRateWindowSeconds || 60);
+      const presented = request.headers['x-api-key'] || (typeof request.headers.authorization === 'string' && request.headers.authorization.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '');
+      let rateKey = `api:${hashIp(clientIp(request), config.ipHashSalt || '')}`;
+      let rateMax = limit;
+      let rateWindow = window;
+      if (presented) {
+        const row = security.db.prepare('SELECT * FROM api_keys WHERE key_hash=? AND enabled=1 AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)').get(createHash('sha256').update(String(presented)).digest('hex'));
+        if (row) {
+          request.apiKey = row;
+          rateKey = `key:${row.id}`;
+          rateMax = row.unlimited ? Number(config.apiKeyAbuseRateMax || 600) : Number(row.rate_limit || limit);
+          rateWindow = row.unlimited ? Number(config.apiKeyAbuseRateWindowSeconds || 60) : window;
+          security.db.prepare('UPDATE api_keys SET last_used_at=CURRENT_TIMESTAMP WHERE id=?').run(row.id);
+        }
+      }
+      if (!security.allowRate(rateKey, rateMax, rateWindow)) return reply.code(429).send({ error: 'rate_limited' });
+    }
   });
 }
