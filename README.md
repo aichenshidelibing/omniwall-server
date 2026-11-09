@@ -1,6 +1,20 @@
 # OmniWall Server
 
-OmniWall Server 是基于 **Node.js 20+、Fastify 和 SQLite** 的服务器部署版。当前入口是 `src/server.js`，生产环境建议使用裸 Node 进程并交由 systemd 管理；Docker、Worker/D1 兼容层和同步脚本仅保留在 `legacy/` 作为迁移参考，不参与默认运行。
+OmniWall Server 是一个可自托管的多图源随机图片服务与管理控制台，基于 **Node.js 20+、Fastify 和 SQLite** 构建。它支持 Unsplash、Pexels、Pixabay、Bing 等图源，提供随机图片、每日图片、候选池缓存、近期排重、API Key、管理员入口轮换、CAP/Turnstile、人机验证、反馈管理和多渠道通知。
+
+当前生产入口是 `src/server.js`，推荐使用裸 Node 进程交由 systemd 管理，不依赖 Docker。旧 Worker/D1 兼容代码和 Docker 文件仅保留在 `legacy/` 作为迁移参考，不参与默认运行。
+
+## 项目特点
+
+- **随机图片 API**：支持查询词、图源、方向和 JSON 元数据。
+- **可靠随机机制**：缓存作为候选池使用，近期返回过的图片会暂时排除，避免重复结果。
+- **每日图片**：按日期和方向固定返回，适合首页背景或每日精选。
+- **安全管理后台**：长随机入口、自动轮换、会话、CSRF、限速和审计。
+- **运行时配置**：可在后台管理图源 API Key、CAP/Turnstile Secret 等敏感配置，敏感值加密且不回显。
+- **API Key**：支持长密钥、自定义限额、禁用和 unlimited 模式；数据库只保存 hash。
+- **通知渠道**：支持 Telegram、飞书/Lark、钉钉、Resend、SendGrid 和通用 Webhook。
+- **轻量部署**：Node.js + SQLite + systemd，默认高位端口 `18080`。
+- **自签 HTTPS**：安装脚本可为 IP 或域名生成自签证书。
 
 ## 快速开始
 
@@ -44,10 +58,18 @@ npm start
 ## 第一次使用
 
 1. 打开安装输出的 HTTPS 地址。
-2. 进入 `/admin`，使用安装时设置的管理员账号和密码登录。
-3. 在管理页面配置至少一个图片源；Bing 可作为无 API Key 的基础来源，其他图源需要对应 API Key。
-4. 在通知设置中填写渠道配置并发送测试通知。测试成功后，再勾选需要订阅的事件。
-5. 如果启用 CAPTCHA，先在 `.env` 中选择 provider 并重启服务：
+2. 安装脚本会在终端一次性显示管理员入口，形如：
+
+```text
+https://服务器IP:18080/admin/<轮换Token>
+```
+
+该入口默认每天自动轮换，数据库只保存它的 hash，服务日志不会输出完整入口。请立即保存。
+
+3. 使用安装时设置的管理员账号和密码登录。
+4. 在管理页面配置至少一个图片源；Bing 可作为无 API Key 的基础来源，其他图源需要对应 API Key。
+5. 在通知设置中填写渠道配置并发送测试通知。测试成功后，再勾选需要订阅的事件。
+6. 如果启用 CAPTCHA，先在 `.env` 中选择 provider 并重启服务：
 
 ```env
 # 关闭验证
@@ -70,6 +92,52 @@ TURNSTILE_SECRET=replace-me
 sudo systemctl restart omniwall
 sudo journalctl -u omniwall -n 100 --no-pager
 ```
+
+## 管理员入口
+
+后台入口不再固定为 `/admin`，而是使用随机 Token：
+
+```text
+/admin/<Token>
+```
+
+- Token 为 48 字节随机值；
+- 数据库只保存 SHA-256 hash；
+- 默认有效期 86400 秒（每天轮换）；
+- 过期后自动生成新入口，旧入口立即失效；
+- 启动日志只显示 `/admin/[one-time-token]`，不泄露完整地址；
+- 管理员可在后台查看当前入口、立即轮换，并修改有效期（范围 `300–31536000` 秒）。
+
+需要兼容固定入口时，可设置：
+
+```env
+ADMIN_ALLOW_LEGACY_PATH=true
+```
+
+此时 `/admin` 也会开放。仅建议在首次初始化或内网调试时短暂使用。
+
+## API Key
+
+后台可以创建 API Key，用于程序化调用图片接口：
+
+```bash
+curl -H "X-API-Key: owk_你的密钥" \
+  "https://服务器地址:18080/api/random?info=true"
+
+curl -H "Authorization: Bearer owk_你的密钥" \
+  "https://服务器地址:18080/api/random?info=true"
+```
+
+说明：
+
+- 密钥为 48 字节随机值，创建时只显示一次；
+- 数据库只保存 SHA-256 hash；
+- 支持启用、禁用、删除；
+- 支持自定义请求限额；
+- 支持 unlimited 模式，绕过普通按 IP 的接口限流；
+- unlimited 仍保留独立滥用保护，可通过 `API_KEY_ABUSE_RATE_MAX` 和 `API_KEY_ABUSE_RATE_WINDOW_SECONDS` 调整。
+
+未携带有效 Key 的调用按普通接口限流处理。
 
 ## 图片 API 与缓存
 
@@ -142,6 +210,27 @@ sudo systemctl restart omniwall
 sudo systemctl status omniwall --no-pager
 ```
 
+### 忘记当前管理员入口
+
+入口无法从日志或数据库明文找回。可以直接登录服务器执行：
+
+```bash
+sudo sqlite3 /opt/omniwall-server/data/omniwall.sqlite \
+  "UPDATE admin_entrypoints SET expires_at = 0 WHERE id = 1;"
+```
+
+然后重启服务，启动日志会提示入口已重置；也可以在管理员仍能登录时从后台查看当前入口。若已无法登录，临时设置 `ADMIN_ALLOW_LEGACY_PATH=true` 并重启，通过 `/admin` 登录后立即关闭该开关并手动轮换入口。
+
+### API Key 返回 401
+
+确认使用了正确的请求头和完整密钥：
+
+```bash
+curl -H "X-API-Key: owk_..." 'https://服务器地址:18080/api/random?info=true'
+```
+
+密钥只显示一次，遗失后无法找回，请在后台删除旧 Key 并创建新 Key。
+
 ### 端口无法访问
 
 确认服务状态、防火墙和端口监听：
@@ -208,6 +297,8 @@ sudo systemctl restart omniwall
 ## 配置与数据
 
 复制 [`.env.example`](.env.example) 为 `.env`。必需配置是 `ADMIN_PASSWORD`；常用配置包括 `HOST`、`PORT`、`DATABASE_PATH`、`PUBLIC_BASE_URL`、`TRUST_PROXY`、图片源 API Key 和站点信息。SQLite 默认位于 `./data/omniwall.sqlite`，备份时同时保留 WAL/SHM 文件，并保护 `.env` 权限。
+
+环境变量是运行时配置的初始值和兜底，优先级高于后台数据库配置。后台保存的图源 Key、CAP/Turnstile Secret 使用 AES-256-GCM 加密存储，页面只显示是否已配置，不回显原值；留空保存表示保留原值。
 
 检查服务是否已启动：
 
